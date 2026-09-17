@@ -22,6 +22,15 @@ describe("redact", () => {
     expect(redact(text).split("\n")).toHaveLength(3);
   });
 
+  // Known wart, not an endorsement: the entropy pass (Pass 3) deliberately favours
+  // recall over precision and has no way to tell a long mixed-case identifier from
+  // a real secret. This pins today's behaviour so the tradeoff stays visible;
+  // Milestone 2's eval harness is what tunes it, not a guess made here.
+  it("currently masks long mixed-case identifiers (known false positive, tuned in Milestone 2)", () => {
+    const identifier = "getUserProfileByIdV2EndpointHandler123456";
+    expect(redact(`const handler = ${identifier};`)).toBe("const handler = [REDACTED];");
+  });
+
   it("flags denylisted paths", () => {
     expect(isDenylistedPath("/home/u/p/.env")).toBe(true);
     expect(isDenylistedPath("/home/u/p/.env.local")).toBe(true);

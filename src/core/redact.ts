@@ -17,7 +17,18 @@ const DENYLIST: RegExp[] = [
   /(^|\/)secrets\//,
 ];
 
-/** True when a high-entropy run looks like a credential rather than prose or code. */
+/**
+ * True when a high-entropy run looks like a credential rather than prose or code.
+ *
+ * Known false-positive class: long mixed-case identifiers (e.g.
+ * `getUserProfileByIdV2EndpointHandler123456`) and base64-ish checksums (e.g. an
+ * npm `sha512-...` integrity hash) can satisfy this heuristic without being
+ * secrets. This is a deliberate recall-over-precision tradeoff: this function's
+ * output is only ever sent to Jev, never shown to the agent or the user (they
+ * always see the original, unredacted text), so an over-eager mask costs Jev some
+ * context rather than leaking anything. Precision gets tuned in Milestone 2
+ * against the eval harness, with data instead of a guess.
+ */
 function looksRandom(word: string): boolean {
   if (word.length < 24) return false;
   if (!/^[A-Za-z0-9+/=_\-]+$/.test(word)) return false;
