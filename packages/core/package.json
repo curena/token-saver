@@ -1,0 +1,8 @@
+{
+  "name": "@token-saver/core",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@typesafe-ai/sdk": "^0.6.0" }
+}
