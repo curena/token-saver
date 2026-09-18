@@ -22,7 +22,11 @@ const CRITERIA = [
     "item does; using it here would be surprising.",
 ] as const;
 
-/** Round a rubric score (0-3, possibly fractional) to the FitLevel it falls closest to (1-4). */
+/**
+ * Round a rubric score (0-3, possibly fractional) to the FitLevel it falls closest to (1-4).
+ * Exact ties (0.5, 1.5, 2.5) round up, i.e. toward the worse fit — deliberate, not just
+ * `Math.round`'s default behavior; keep it this way rather than "fixing" it later.
+ */
 function levelForIndex(index: number): FitLevel {
   const clamped = Math.min(3, Math.max(0, Math.round(index)));
   return (clamped + 1) as FitLevel;

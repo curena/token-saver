@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FIT_BATCH_SIZE, fitQuestions, fitState, parseFit } from "../../../src/core/questions/fit.js";
-import type { InventoryItem, ProjectProfile } from "../../../src/core/types.js";
+import type { FitLevel, InventoryItem, ProjectProfile } from "../../../src/core/types.js";
 
 const profile: ProjectProfile = {
   root: "/home/u/proj",
@@ -61,5 +61,30 @@ describe("fit questions", () => {
 
   it("batches at 20 items", () => {
     expect(FIT_BATCH_SIZE).toBe(20);
+  });
+
+  it("rounds the rubric score to the nearest fit level, ties going to the worse fit", () => {
+    const cases: Array<[number, FitLevel]> = [
+      [0, 1],
+      [0.4, 1],
+      [0.5, 2],
+      [2.5, 4],
+      [3, 4],
+      [3.9, 4],
+      [-1, 1],
+      [4, 4],
+    ];
+    for (const [input, expected] of cases) {
+      const levels = parseFit({ "fit::pdf": { score: input } });
+      expect(levels.get("pdf")).toBe(expected);
+    }
+  });
+
+  it("omits an entry whose score is NaN", () => {
+    expect(parseFit({ "fit::pdf": { score: Number.NaN } }).size).toBe(0);
+  });
+
+  it("omits an entry with no score at all", () => {
+    expect(parseFit({ "fit::pdf": {} }).size).toBe(0);
   });
 });
