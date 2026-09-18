@@ -80,4 +80,11 @@ describe("decideLevel", () => {
     const under = decideLevel(chunks([1161, 539]), [0.9, 0.01], DEFAULT_CONFIG);
     expect(under.level).toBe("leave");
   });
+
+  it("keeps a chunk whose probability is not a real 0..1 number", () => {
+    for (const bad of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY]) {
+      const plan = decideLevel(chunks([3000, 3000]), [bad, 0.01], DEFAULT_CONFIG);
+      expect(plan.keptChunks).toEqual([0]);
+    }
+  });
 });

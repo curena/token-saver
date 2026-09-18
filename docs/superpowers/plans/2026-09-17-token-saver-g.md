@@ -923,10 +923,7 @@ export function decideLevel(
   const total = chunks.reduce((sum, chunk) => sum + chunk.tokens, 0);
   if (total === 0) return LEAVE;
 
-  // A chunk with no probability is kept, never dropped. judgeResult already
-  // fills a missing answer with 1, so this branch should be unreachable; if the
-  // two layers ever disagree, both must err towards leaving context intact.
-  const kept = chunks.filter((chunk) => (probabilities[chunk.index] ?? 1) >= config.keepThreshold);
+  const kept = chunks.filter((chunk) => keepScore(probabilities[chunk.index]) >= config.keepThreshold);
   const keptTokens = kept.reduce((sum, chunk) => sum + chunk.tokens, 0);
 
   if (keptTokens >= total * config.leaveAloneRatio) return LEAVE;
@@ -1572,8 +1569,10 @@ export async function judgeResult(
     const probabilities: number[] = [];
     for (let index = 0; index < chunkCount; index++) {
       const answer = response.answers[`chunk::${index}`];
-      // A missing answer must never drop content.
-      probabilities.push(typeof answer?.noul === "number" ? answer.noul : 1);
+      // A missing OR malformed answer must never drop content. `typeof` alone
+      // admits NaN and out-of-range numbers, and both read as "drop" once they
+      // meet the keep threshold, so the range is checked here.
+      probabilities.push(isProbability(answer?.noul) ? answer.noul : 1);
     }
     return probabilities;
   } catch {

@@ -82,4 +82,14 @@ describe("judgeResult", () => {
     const client: JevClient = { systemOne: async () => ({ answers: {} }) };
     expect(await judgeResult(client, request, 2, DEFAULT_CONFIG, AbortSignal.abort())).toBeNull();
   });
+
+  it("reads a malformed probability as keep, not as drop", async () => {
+    for (const bad of [Number.NaN, -1, 1.5, "0.9", null]) {
+      const client: JevClient = {
+        systemOne: async () => ({ answers: { "chunk::0": { noul: bad as number }, "chunk::1": { noul: 0.1 } } }),
+      };
+      const out = await judgeResult(client, buildRequest(result, chunks, task, "", DEFAULT_CONFIG), 2, DEFAULT_CONFIG);
+      expect(out).toEqual([1, 0.1]);
+    }
+  });
 });

@@ -57,6 +57,10 @@ export function buildRequest(
   };
 }
 
+function isProbability(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
 export async function judgeResult(
   client: JevClient,
   request: JevRequest,
@@ -84,8 +88,10 @@ export async function judgeResult(
     const probabilities: number[] = [];
     for (let index = 0; index < chunkCount; index++) {
       const answer = response.answers[`chunk::${index}`];
-      // A missing answer must never drop content.
-      probabilities.push(typeof answer?.noul === "number" ? answer.noul : 1);
+      // A missing OR malformed answer must never drop content. `typeof` alone
+      // admits NaN and out-of-range numbers, and both read as "drop" once they
+      // meet the keep threshold, so the range is checked here.
+      probabilities.push(isProbability(answer?.noul) ? answer.noul : 1);
     }
     return probabilities;
   } catch {
