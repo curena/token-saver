@@ -7,6 +7,6 @@ await build({
   platform: "node",
   format: "esm",
   target: "node20",
-  external: ["@earendil-works/*"],
+  external: ["@earendil-works/*", "typebox"],
 });
 console.log("wrote packages/pi/dist/token-saver.js");
