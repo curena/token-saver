@@ -39,6 +39,14 @@ describe("redact", () => {
     expect(isDenylistedPath("/home/u/p/src/index.ts")).toBe(false);
   });
 
+  // `.env*` (the user's own verbatim denylist wording) means more than files with a dot
+  // after "env": direnv's `.envrc` routinely holds exported API keys, and it has no dot
+  // separating "env" from the rest of the name, so a pattern requiring one would miss it.
+  it("flags .env-prefixed paths beyond the dotted .env.* shape", () => {
+    expect(isDenylistedPath("/home/u/p/.envrc")).toBe(true);
+    expect(isDenylistedPath("/home/u/p/.environment")).toBe(true);
+  });
+
   // A bare directory path (no trailing slash) must match too — callers that enumerate a
   // directory listing (e.g. src/audit/profile.ts's tree) pass exactly this shape.
   it("flags a bare secrets directory path, with no trailing slash, as well as a nested one", () => {

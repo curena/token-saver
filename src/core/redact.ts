@@ -11,7 +11,10 @@ const ASSIGNMENT =
   /\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)[A-Z0-9_]*)\s*[:=]\s*("[^"\n]*"|'[^'\n]*'|[^\s"'\n]+)/g;
 
 const DENYLIST: RegExp[] = [
-  /(^|\/)\.env(\.[^/]*)?$/,
+  // `.env*`: not just `.env`/`.env.local` but also `.envrc` (direnv, routinely holds
+  // exported API keys) and `.environment` -- anything starting with `.env`, no dot required
+  // after it.
+  /(^|\/)\.env[^/]*$/,
   /\.pem$/,
   /(^|\/)id_[A-Za-z0-9_]+$/,
   /(^|\/)secrets(\/|$)/,
