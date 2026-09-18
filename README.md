@@ -25,4 +25,18 @@ reminded when your skills or project drift enough to warrant a fresh audit.
 
 The audit never proposes `off`, so every skill stays available as `/name`.
 
+## Redaction
+
+Before any project data (README, manifests, file tree, recent prompts) is sent to Jev, it's
+run through a redaction pass. A path matching the denylist is never read for this purpose at
+all:
+
+- `.env*`
+- `*.pem`
+- `id_*`
+- `secrets/**`
+
+Everything else is scanned for high-entropy strings (API keys, tokens) and redacted in place
+before it leaves your machine.
+
 Design: `docs/superpowers/specs/2026-09-17-token-saver-design.md`
