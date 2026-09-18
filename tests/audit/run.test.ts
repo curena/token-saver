@@ -208,4 +208,69 @@ describe("applyProposals and undoLast", () => {
     expect(count).toBe(1);
     expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("user-invocable-only");
   });
+
+  it("leaves the settings file untouched when appendAudit throws during undoLast (order-of-operations)", () => {
+    const settings = join(root, "settings.local.json");
+    writeFileSync(settings, JSON.stringify({ skillOverrides: { pdf: "name-only" } }), "utf8");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    // Seed a real audit entry via a genuine (unstubbed) apply, so undoLast has something to revert.
+    applyProposals(
+      buildProposals([item("pdf", { currentState: "name-only" })], fits, new Map()),
+      settings, store, new Date(),
+    );
+    const afterApply = readFileSync(settings, "utf8");
+
+    const originalAppend = store.appendAudit.bind(store);
+    store.appendAudit = () => { throw new Error("boom"); };
+    expect(() => undoLast(store)).toThrow("boom");
+    expect(readFileSync(settings, "utf8")).toBe(afterApply);
+    store.appendAudit = originalAppend;
+  });
+
+  it("preserves unrelated keys and restores original override values on an apply-then-undo round trip", () => {
+    const settings = join(root, "settings.local.json");
+    writeFileSync(
+      settings,
+      JSON.stringify({ other: 1, skillOverrides: { cli: "on", pdf: "name-only" } }),
+      "utf8",
+    );
+    const store = new Store(root);
+    // "pdf" already has an override that the proposal will change; "extra" has none yet,
+    // so it's a key that's absent before the apply and must be absent again after undo.
+    const fits = new Map<string, FitLevel>([["pdf", 4], ["extra", 4]]);
+    const proposals = buildProposals(
+      [item("pdf", { currentState: "name-only" }), item("extra", { currentState: "on" })],
+      fits, new Map(),
+    );
+
+    applyProposals(proposals, settings, store, new Date());
+    const afterApply = JSON.parse(readFileSync(settings, "utf8"));
+    expect(afterApply.skillOverrides).toEqual({
+      cli: "on", pdf: "user-invocable-only", extra: "user-invocable-only",
+    });
+    expect(afterApply.other).toBe(1);
+
+    undoLast(store);
+    const afterUndo = JSON.parse(readFileSync(settings, "utf8"));
+    expect(afterUndo.other).toBe(1);
+    expect(afterUndo.skillOverrides.pdf).toBe("name-only");
+    expect(afterUndo.skillOverrides.cli).toBe("on");
+    expect(Object.prototype.hasOwnProperty.call(afterUndo.skillOverrides, "extra")).toBe(false);
+    expect(afterUndo.skillOverrides).toEqual({ cli: "on", pdf: "name-only" });
+  });
+
+  it("throws from appendAudit (not corrupting settings) when a pre-existing override value is not a string", () => {
+    const settings = join(root, "settings.local.json");
+    const before = JSON.stringify({ skillOverrides: { pdf: 42 } });
+    writeFileSync(settings, before, "utf8");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    const proposals = buildProposals([item("pdf")], fits, new Map());
+    // No stubbing here: the real Store.appendAudit rejects a non-string `previous` value
+    // (see src/runtime/store.ts), which is exactly what a numeric pre-existing override
+    // produces. This exercises that path end-to-end rather than via a stub.
+    expect(() => applyProposals(proposals, settings, store, new Date())).toThrow(/must be a string/);
+    expect(readFileSync(settings, "utf8")).toBe(before);
+  });
 });

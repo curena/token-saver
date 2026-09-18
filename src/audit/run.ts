@@ -63,6 +63,11 @@ export function renderProposals(proposals: Proposal[]): string {
   ].join("\n");
 }
 
+/** True for a plain JSON object: excludes null, arrays and non-object JSON values. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
 /**
  * Read `skillOverrides` off a settings file as a plain string map, tolerating anything a
  * hand-edited or half-written settings.json might contain: missing file, malformed JSON,
@@ -71,16 +76,14 @@ export function renderProposals(proposals: Proposal[]): string {
  */
 function readOverrides(settings: Record<string, unknown>): Record<string, string> {
   const raw = settings.skillOverrides;
-  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
-  return { ...(raw as Record<string, string>) };
+  return isPlainObject(raw) ? { ...(raw as Record<string, string>) } : {};
 }
 
 function readSettings(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
-    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as Record<string, unknown>;
+    return isPlainObject(parsed) ? parsed : {};
   } catch {
     return {};
   }
