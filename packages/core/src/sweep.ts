@@ -41,7 +41,7 @@ function empty(reason: SweepOutcome["reason"], jevRequests = 0, jevInputTokens =
   return { decisions: [], savedTokens: 0, jevRequests, jevInputTokens, probabilitiesById: {}, reason };
 }
 
-function firstLineOf(result: ResultRef): number {
+export function firstLineOf(result: ResultRef): number {
   const offset = result.input.offset;
   return typeof offset === "number" && offset > 0 ? offset : 1;
 }

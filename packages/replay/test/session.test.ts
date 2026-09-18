@@ -49,6 +49,15 @@ describe("parseSession", () => {
     expect(sites[2]!.model).toBe("claude-sonnet-5");
     expect(sites[2]!.usage.cacheRead).toBe(2000);
   });
+
+  it("tracks token counts for every message, not just results", () => {
+    const site = sites[2]!;
+    // Three message kinds contribute: user text, assistant text and tool results.
+    const allMessages = site.tokenCounts.reduce((sum, tokens) => sum + tokens, 0);
+    const resultsOnly = site.results.reduce((sum, result) => sum + result.tokens, 0);
+    expect(site.tokenCounts.length).toBeGreaterThan(site.results.length);
+    expect(allMessages).toBeGreaterThan(resultsOnly);
+  });
 });
 
 describe("afterResultSummary", () => {

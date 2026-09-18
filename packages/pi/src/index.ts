@@ -42,7 +42,7 @@ export default function extension(pi: any) {
   };
 
   pi.on("session_start", async (_event: unknown, ctx: any) => {
-    store.rebuildFrom(ctx.sessionManager.getEntries());
+    store.rebuildFrom(ctx.sessionManager.buildContextEntries());
     if (client === null) {
       ctx.ui?.notify?.("token-saver: TYPESAFE_API_KEY is not set, staying inert", "warn");
     }

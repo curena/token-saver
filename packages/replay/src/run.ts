@@ -1,6 +1,7 @@
-import { applyDecisions, chunkResult, runSweep } from "@token-saver/core";
+import { applyDecisions, chunkResult, firstLineOf, runSweep } from "@token-saver/core";
 import type { Config, Decision, JevClient, Prices } from "@token-saver/core";
 import { afterResultSummary, parseSession } from "./session.js";
+import type { CallSite } from "./session.js";
 import { collectLaterUses, detectMisses } from "./retention.js";
 import type { Miss } from "./retention.js";
 
@@ -18,6 +19,13 @@ export interface ReplayMetrics {
   rewrittenTokens: number;
   sweepMs: number;
   misses: Miss[];
+}
+
+/** T_after (spec §6.1): every message's tokens from `fromIndex` to the end of the context. */
+function suffixTokens(site: CallSite, fromIndex: number): number {
+  let sum = 0;
+  for (let index = fromIndex; index < site.tokenCounts.length; index++) sum += site.tokenCounts[index]!;
+  return sum;
 }
 
 export async function replaySession(
@@ -51,10 +59,7 @@ export async function replaySession(
           working_files: site.workingFiles,
         },
         afterResultFor: (result) => afterResultSummary(site, result),
-        tokensAfter: (messageIndex) =>
-          site.results
-            .filter((result) => result.messageIndex >= messageIndex)
-            .reduce((sum, result) => sum + result.tokens, 0),
+        tokensAfter: (messageIndex) => suffixTokens(site, messageIndex),
         callsSoFar: callIndex + 1,
         prices,
         config,
@@ -73,9 +78,7 @@ export async function replaySession(
             (decision) => site.results.find((result) => result.id === decision.id)!.messageIndex,
           ),
         );
-        metrics.rewrittenTokens += site.results
-          .filter((result) => result.messageIndex >= fromIndex)
-          .reduce((sum, result) => sum + result.tokens, 0);
+        metrics.rewrittenTokens += suffixTokens(site, fromIndex);
 
         for (const decision of outcome.decisions) {
           decided.set(decision.id, decision);
@@ -83,7 +86,7 @@ export async function replaySession(
           if (decision.level === "partial") metrics.partial++;
 
           const result = site.results.find((candidate) => candidate.id === decision.id)!;
-          const chunks = chunkResult(result.toolName, result.text);
+          const chunks = chunkResult(result.toolName, result.text, firstLineOf(result));
           const elided = chunks
             .map((chunk) => chunk.index)
             .filter((index) => !decision.keptChunks.includes(index));

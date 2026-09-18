@@ -70,6 +70,20 @@ describe("handleContext", () => {
     expect(out.messages).toBeNull();
   });
 
+  it("keeps existing stubs applied when disabled", async () => {
+    const store = new DecisionStore();
+    const first = await handleContext(input({ store }));
+    store.add(first.sweep!.decisions);
+    const out = await handleContext(input({
+      store,
+      config: { ...DEFAULT_CONFIG, minResultTokens: 100, enabled: false },
+    }));
+    expect(out.sweep).toBeNull();
+    expect(out.trigger).toBeNull();
+    expect(out.messages).not.toBeNull();
+    expect(JSON.stringify(out.messages)).toContain("[token-saver]");
+  });
+
   it("sweeps and replaces the stale result's text", async () => {
     const out = await handleContext(input());
     expect(out.trigger).toBe("cost");

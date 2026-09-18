@@ -25,6 +25,8 @@ export interface CallSite {
   workingFiles: string[];
   model: string;
   usage: { input: number; cacheRead: number; cacheWrite: number; output: number };
+  /** Estimated tokens of every message seen so far, keyed by messageIndex (index 0 unused). */
+  tokenCounts: number[];
 }
 
 const TOUCH_KIND: Record<string, FileTouch["kind"]> = { read: "read", edit: "edit", write: "write" };
@@ -57,6 +59,7 @@ export function parseSession(jsonl: string): CallSite[] {
   const results: ResultRef[] = [];
   const touches: FileTouch[] = [];
   const userMessages: string[] = [];
+  const tokenCounts: number[] = [0]; // tokenCounts[messageIndex]; 0 is a never-used sentinel
   const callsById = new Map<string, { name: string; args: Record<string, unknown>; turn: number }>();
   let userTurn = 0;
   let latestAssistantText = "";
@@ -66,6 +69,7 @@ export function parseSession(jsonl: string): CallSite[] {
     if (entry.type !== "message" || entry.message === undefined) continue;
     const message = entry.message;
     messageIndex++;
+    tokenCounts[messageIndex] = estimateTokens(textOf(message.content));
 
     if (message.role === "user") {
       userTurn++;
@@ -110,6 +114,7 @@ export function parseSession(jsonl: string): CallSite[] {
       workingFiles,
       model: message.model ?? "unknown",
       usage: message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      tokenCounts: [...tokenCounts],
     });
 
     latestAssistantText = textOf(message.content);

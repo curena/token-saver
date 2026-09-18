@@ -141,7 +141,11 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
     lastForcedFraction: input.lastForcedFraction,
     lastForcedEligible: input.lastForcedEligible,
   };
-  if (!input.config.enabled || input.client === null) return unchanged;
+  if (!input.config.enabled || input.client === null) {
+    // Decisions are immutable: "/token-saver off" stops sweeps but existing
+    // stubs stay applied (spec §7); only the sweep is gated on `enabled`.
+    return { ...unchanged, messages: withDecisions(input.messages, input.store) };
+  }
 
   const { results, touches, task, currentTurn } = collectResults(input.messages);
 
@@ -165,7 +169,12 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
     return { ...unchanged, messages: withDecisions(input.messages, input.store) };
   }
 
-  const tokensByIndex = new Map(results.map((result) => [result.messageIndex, result.tokens]));
+  // T_after is the whole suffix (spec §6.1): every message's tokens from the
+  // earliest changed result to the end, not just tool-result tokens.
+  const tokensByIndex = new Map<number, number>();
+  input.messages.forEach((message, index) => {
+    tokensByIndex.set(index, estimateTokens(textOf(message.content)));
+  });
   const outcome = await runSweep({
     results,
     decided: input.store.get(),
