@@ -36,8 +36,9 @@ describe("selectEligible", () => {
     expect(relaxed).toHaveLength(1);
   });
 
-  it("skips results under minResultTokens", () => {
+  it("skips results under minResultTokens but keeps the threshold itself", () => {
     expect(selectEligible([ref({ tokens: 1499 })], none, DEFAULT_CONFIG)).toEqual([]);
+    expect(selectEligible([ref({ tokens: 1500 })], none, DEFAULT_CONFIG)).toHaveLength(1);
   });
 
   it("skips errors", () => {
