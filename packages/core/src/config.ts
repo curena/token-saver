@@ -29,7 +29,7 @@ export function loadConfig(
   options: { files?: string[]; env?: NodeJS.ProcessEnv } = {},
 ): Config {
   const env = options.env ?? process.env;
-  const config: Config = { ...DEFAULT_CONFIG };
+  const config: Config = { ...DEFAULT_CONFIG, excludedTools: [...DEFAULT_CONFIG.excludedTools] };
 
   for (const file of options.files ?? []) {
     let parsed: Record<string, unknown>;
@@ -52,13 +52,16 @@ export function loadConfig(
   for (const key of NUMERIC_KEYS) {
     const raw = env[envName(key)];
     if (raw === undefined) continue;
+    if (raw.trim() === "") continue; // an empty env value is "not set", never coerced to 0
     const value = Number(raw);
     if (Number.isFinite(value)) config[key] = value;
   }
   const model = env.TOKEN_SAVER_JEV_MODEL;
   if (model !== undefined && model.length > 0) config.jevModel = model;
   const tools = env.TOKEN_SAVER_EXCLUDED_TOOLS;
-  if (tools !== undefined) config.excludedTools = tools.split(",").map((t) => t.trim()).filter(Boolean);
+  if (tools !== undefined && tools.trim() !== "") {
+    config.excludedTools = tools.split(",").map((t) => t.trim()).filter(Boolean);
+  }
   if (env.TOKEN_SAVER === "off") config.enabled = false;
 
   return config;

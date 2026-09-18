@@ -1985,18 +1985,35 @@ git commit -m "feat(core): sweep orchestrator and decision application"
 `packages/core/test/config.test.ts`:
 
 ```ts
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, loadConfig } from "../src/config.js";
 
-function fileWith(contents: unknown): string {
+const createdDirs: string[] = [];
+
+function tempFile(contents: string): string {
   const dir = mkdtempSync(join(tmpdir(), "token-saver-"));
+  createdDirs.push(dir);
   const path = join(dir, "token-saver.json");
-  writeFileSync(path, JSON.stringify(contents));
+  writeFileSync(path, contents);
   return path;
 }
+
+function fileWith(contents: unknown): string {
+  return tempFile(JSON.stringify(contents));
+}
+
+function fileWithRaw(contents: string): string {
+  return tempFile(contents);
+}
+
+afterEach(() => {
+  for (const dir of createdDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe("loadConfig", () => {
   it("returns the defaults with no files or env", () => {
@@ -2033,13 +2050,31 @@ describe("loadConfig", () => {
     expect(config).toEqual(DEFAULT_CONFIG);
   });
 
+  it("ignores a malformed config file", () => {
+    expect(loadConfig({ files: [fileWithRaw("not json {")], env: {} })).toEqual(DEFAULT_CONFIG);
+  });
+
   it("ignores non-numeric env values for numeric settings", () => {
     expect(loadConfig({ files: [], env: { TOKEN_SAVER_PROTECT_TURNS: "soon" } }).protectTurns).toBe(2);
+  });
+
+  it("ignores empty-string env values for numeric settings", () => {
+    expect(loadConfig({ files: [], env: { TOKEN_SAVER_PROTECT_TURNS: "" } }).protectTurns).toBe(2);
   });
 
   it("reads excludedTools as a comma-separated env list", () => {
     const config = loadConfig({ files: [], env: { TOKEN_SAVER_EXCLUDED_TOOLS: "edit,write,apply_patch" } });
     expect(config.excludedTools).toEqual(["edit", "write", "apply_patch"]);
+  });
+
+  it("ignores empty-string excludedTools", () => {
+    expect(loadConfig({ files: [], env: { TOKEN_SAVER_EXCLUDED_TOOLS: "" } }).excludedTools).toEqual(["edit", "write"]);
+  });
+
+  it("does not alias the default excludedTools array", () => {
+    const config = loadConfig({ files: [], env: {} });
+    config.excludedTools.push("apply_patch");
+    expect(DEFAULT_CONFIG.excludedTools).toEqual(["edit", "write"]);
   });
 });
 ```
@@ -2069,7 +2104,7 @@ export function loadConfig(
   options: { files?: string[]; env?: NodeJS.ProcessEnv } = {},
 ): Config {
   const env = options.env ?? process.env;
-  const config: Config = { ...DEFAULT_CONFIG };
+  const config: Config = { ...DEFAULT_CONFIG, excludedTools: [...DEFAULT_CONFIG.excludedTools] };
 
   for (const file of options.files ?? []) {
     let parsed: Record<string, unknown>;
@@ -2092,13 +2127,16 @@ export function loadConfig(
   for (const key of NUMERIC_KEYS) {
     const raw = env[envName(key)];
     if (raw === undefined) continue;
+    if (raw.trim() === "") continue; // an empty env value is "not set", never coerced to 0
     const value = Number(raw);
     if (Number.isFinite(value)) config[key] = value;
   }
   const model = env.TOKEN_SAVER_JEV_MODEL;
   if (model !== undefined && model.length > 0) config.jevModel = model;
   const tools = env.TOKEN_SAVER_EXCLUDED_TOOLS;
-  if (tools !== undefined) config.excludedTools = tools.split(",").map((t) => t.trim()).filter(Boolean);
+  if (tools !== undefined && tools.trim() !== "") {
+    config.excludedTools = tools.split(",").map((t) => t.trim()).filter(Boolean);
+  }
   if (env.TOKEN_SAVER === "off") config.enabled = false;
 
   return config;
@@ -2108,7 +2146,7 @@ export function loadConfig(
 - [ ] **Step 4: Run the test and watch it pass**
 
 Run: `npx vitest run packages/core/test/config.test.ts`
-Expected: PASS, 7 tests.
+Expected: PASS, 11 tests.
 
 - [ ] **Step 5: Commit**
 
