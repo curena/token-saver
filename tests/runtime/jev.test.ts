@@ -54,4 +54,49 @@ describe("Jev", () => {
     expect(events.map((e) => e.cached)).toEqual([false, true]);
     expect(events.every((e) => e.ok)).toBe(true);
   });
+
+  it("redacts a circular state instead of throwing", async () => {
+    const seen: unknown[] = [];
+    const state: Record<string, unknown> = { a: 1 };
+    state.self = state;
+    const client = {
+      systemOne: async (req: any) => {
+        seen.push(req.state);
+        return { answers: { q: { noul: 0.5 } } };
+      },
+    };
+    // Chosen behavior: the cycle guard elides the self-reference as "[Circular]" so
+    // redaction and the call still succeed, rather than losing the judgment to a
+    // swallowed exception.
+    const result = await new Jev({ client }).ask(state, questions);
+    expect(result).toEqual({ q: { noul: 0.5 } });
+    expect((seen[0] as any).self).toBe("[Circular]");
+  });
+
+  it("does not throw when state contains a BigInt", async () => {
+    const client = { systemOne: async () => ({ answers: { q: { noul: 0.5 } } }) };
+    const result = await new Jev({ client }).ask({ big: 10n }, questions);
+    expect(result).toEqual({ q: { noul: 0.5 } });
+  });
+
+  it("returns null when the client resolves without answers", async () => {
+    const client = { systemOne: async () => ({}) as any };
+    const jev = new Jev({ client });
+    expect(await jev.ask({ a: 1 }, questions)).toBeNull();
+  });
+
+  it("does not cache a malformed response", async () => {
+    let calls = 0;
+    const client = {
+      systemOne: async () => {
+        calls += 1;
+        if (calls === 1) return {} as any;
+        return { answers: { q: { noul: 0.7 } } };
+      },
+    };
+    const jev = new Jev({ client });
+    expect(await jev.ask({ a: 1 }, questions)).toBeNull();
+    expect(await jev.ask({ a: 1 }, questions)).toEqual({ q: { noul: 0.7 } });
+    expect(calls).toBe(2);
+  });
 });

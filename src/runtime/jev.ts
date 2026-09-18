@@ -15,14 +15,34 @@ export interface JevOptions {
   onUsage?: (event: { ms: number; cached: boolean; ok: boolean }) => void;
 }
 
-/** Recursively redact every string in a JSON-serialisable value. */
-function redactDeep(value: unknown): unknown {
+/**
+ * Recursively redact every string in a JSON-serialisable value.
+ *
+ * `state` is caller-supplied and typed `unknown`, so it may be a live object graph rather
+ * than plain data: `seen` (a `WeakSet` of objects currently on the recursion stack) elides
+ * a cycle as `"[Circular]"` instead of recursing forever, and a `bigint` — the one JS
+ * primitive `JSON.stringify` throws on — is converted to its string form. Both keep the
+ * common case working (redaction still runs, the judgment still gets sent) rather than
+ * merely avoiding a crash.
+ */
+function redactDeep(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
   if (typeof value === "string") return redact(value);
-  if (Array.isArray(value)) return value.map(redactDeep);
+  if (typeof value === "bigint") return value.toString();
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    const result = value.map((v) => redactDeep(v, seen));
+    seen.delete(value);
+    return result;
+  }
   if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, redactDeep(v)]),
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    const result = Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, redactDeep(v, seen)]),
     );
+    seen.delete(value);
+    return result;
   }
   return value;
 }
@@ -49,21 +69,26 @@ export class Jev {
     questions: Record<string, unknown>,
   ): Promise<Record<string, any> | null> {
     if (!this.client) return null;
-    const safeState = redactDeep(state);
-    const key = createHash("sha256")
-      .update(JSON.stringify({ state: safeState, questions }))
-      .digest("hex");
-
-    const hit = this.cache.get(key);
-    if (hit) {
-      this.onUsage?.({ ms: 0, cached: true, ok: true });
-      return hit;
-    }
 
     const started = Date.now();
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      // Redaction and the cache key are computed inside this guard too: `state` is
+      // `unknown`, so a caller handing us a live object graph (circular references,
+      // BigInts) must not escape as an unhandled rejection — it has to fail open like
+      // everything else this method does.
+      const safeState = redactDeep(state);
+      const key = createHash("sha256")
+        .update(JSON.stringify({ state: safeState, questions }))
+        .digest("hex");
+
+      const hit = this.cache.get(key);
+      if (hit) {
+        this.onUsage?.({ ms: 0, cached: true, ok: true });
+        return hit;
+      }
+
       const response = await Promise.race([
         this.client.systemOne({ state: safeState, questions }, { signal: controller.signal }),
         new Promise<never>((_, reject) => {
@@ -73,6 +98,19 @@ export class Jev {
           }, this.deadlineMs);
         }),
       ]);
+
+      // A client can resolve with a malformed body (e.g. `{}`). Validate before caching
+      // or returning it so a bad response fails open through the catch below instead of
+      // resolving to `undefined`, which callers checking `result === null` would miss.
+      if (
+        response == null ||
+        typeof response !== "object" ||
+        response.answers == null ||
+        typeof response.answers !== "object"
+      ) {
+        throw new Error("token-saver: malformed systemOne response");
+      }
+
       this.cache.set(key, response.answers);
       this.onUsage?.({ ms: Date.now() - started, cached: false, ok: true });
       return response.answers;
