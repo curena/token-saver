@@ -73,6 +73,24 @@ describe("Jev", () => {
     expect((seen[0] as any).self).toBe("[Circular]");
   });
 
+  it("keeps a shared acyclic node in both positions", async () => {
+    const seen: unknown[] = [];
+    const shared = { note: "keep me" };
+    const state = { a: shared, b: shared };
+    const client = {
+      systemOne: async (req: any) => {
+        seen.push(req.state);
+        return { answers: { q: { noul: 0.5 } } };
+      },
+    };
+    // The cycle guard must track ancestors (added on the way in, deleted on the way out),
+    // not everything ever visited — a visited-set guard would elide this shared, non-cyclic
+    // node as "[Circular]" the second time it's reached and silently drop real content.
+    await new Jev({ client }).ask(state, questions);
+    expect(seen[0]).toEqual({ a: { note: "keep me" }, b: { note: "keep me" } });
+    expect(JSON.stringify(seen[0])).not.toContain("[Circular]");
+  });
+
   it("does not throw when state contains a BigInt", async () => {
     const client = { systemOne: async () => ({ answers: { q: { noul: 0.5 } } }) };
     const result = await new Jev({ client }).ask({ big: 10n }, questions);
