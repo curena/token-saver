@@ -1,7 +1,7 @@
 # token-saver: design
 
 Date: 2026-09-17
-Status: approved design, not yet implemented
+Status: implemented (G); C deferred
 Harness: pi (pi coding agent, `@earendil-works/pi-coding-agent` 0.85.1)
 
 ## 1. Problem
