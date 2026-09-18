@@ -62,4 +62,42 @@ describe("buildProfile", () => {
     expect(profile.manifests).toEqual([]);
     expect(profile.tree).toEqual([]);
   });
+
+  it("redacts a secret found in the README", () => {
+    writeFileSync(join(root, "README.md"), "setup:\nAPI_KEY=abcdefghijklmnopqrstuv\n", "utf8");
+    const readme = buildProfile(root, []).readme;
+    expect(readme).toContain("[REDACTED]");
+    expect(readme).not.toContain("abcdefghijklmnopqrstuv");
+  });
+
+  it("redacts a secret found in a manifest", () => {
+    writeFileSync(
+      join(root, "package.json"),
+      '{"name":"proj","token":"ghp_1234567890abcdefghijklmnopqrstuvwxyz"}',
+      "utf8",
+    );
+    const manifests = buildProfile(root, []).manifests.join();
+    expect(manifests).toContain("[REDACTED]");
+    expect(manifests).not.toContain("ghp_1234567890abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("excludes denylisted paths from the tree", () => {
+    mkdirSync(join(root, "secrets"));
+    writeFileSync(join(root, "secrets", "x.txt"), "hi", "utf8");
+    writeFileSync(join(root, "id_rsa"), "hi", "utf8");
+    mkdirSync(join(root, "src"));
+    const tree = buildProfile(root, []).tree;
+    expect(tree).toContain("src/");
+    expect(tree.join()).not.toContain("secrets");
+    expect(tree.join()).not.toContain("id_rsa");
+  });
+
+  it("caps the tree and marks how many entries were hidden", () => {
+    for (let i = 0; i < 250; i++) {
+      writeFileSync(join(root, `file-${String(i).padStart(3, "0")}.txt`), "x", "utf8");
+    }
+    const tree = buildProfile(root, []).tree;
+    expect(tree).toHaveLength(201);
+    expect(tree.at(-1)).toBe("… 50 more");
+  });
 });

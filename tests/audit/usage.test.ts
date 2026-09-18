@@ -41,6 +41,11 @@ describe("countSkillUses", () => {
     expect(countSkillUses(dir, new Date("2026-09-01T00:00:00Z")).get("pdf")).toBeUndefined();
   });
 
+  it("includes a use timestamped exactly at the cutoff", () => {
+    transcript("a.jsonl", [skillUse("2026-09-01T00:00:00Z", "pdf")]);
+    expect(countSkillUses(dir, new Date("2026-09-01T00:00:00Z")).get("pdf")).toBe(1);
+  });
+
   it("strips a plugin prefix so ids match the inventory", () => {
     transcript("a.jsonl", [skillUse("2026-09-10T10:00:00Z", "superpowers:brainstorming")]);
     expect(countSkillUses(dir, new Date("2026-09-01T00:00:00Z")).get("brainstorming")).toBe(1);
