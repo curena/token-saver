@@ -70,4 +70,31 @@ describe("planCostGate", () => {
   it("respects a stricter margin", () => {
     expect(planCostGate(input({ costMargin: 100 })).sweep).toBe(false);
   });
+
+  it("does not credit a saving larger than the suffix it comes out of", () => {
+    const plan = planCostGate(input({
+      candidates: [{ id: "a", messageIndex: 5, expectedSave: 1_000_000 }],
+      tokensAfter: () => 100,
+      costMargin: 1_000_000,
+    }));
+    expect(plan.value).toBe(100 * expectedCalls(20) * PRICES.cacheRead);
+    expect(plan.cost).toBe(0);
+  });
+
+  it("falls back to the no-cache floor when writing is no dearer than reading", () => {
+    const prices = { input: 3 / 1e6, cacheRead: 0.3 / 1e6, cacheWrite: 0.05 / 1e6 };
+    const small = planCostGate(input({
+      prices,
+      candidates: [{ id: "a", messageIndex: 5, expectedSave: 100 }],
+      tokensAfter: () => 1_000_000,
+    }));
+    expect(small.sweep).toBe(false);
+    const large = planCostGate(input({
+      prices,
+      candidates: [{ id: "a", messageIndex: 5, expectedSave: 40_000 }],
+      tokensAfter: () => 1_000_000,
+    }));
+    expect(large.sweep).toBe(true);
+    expect(large.cost).toBe(0);
+  });
 });
