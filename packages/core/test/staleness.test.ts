@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findSuperseded, pathOf } from "../src/policy/staleness.js";
+import { findSuperseded, normalizePath, pathOf } from "../src/policy/staleness.js";
 import type { ResultRef } from "../src/types.js";
 
 function read(id: string, path: string, messageIndex: number): ResultRef {
@@ -9,7 +9,26 @@ function read(id: string, path: string, messageIndex: number): ResultRef {
   };
 }
 
+describe("normalizePath", () => {
+  it("settles spellings that do not need a working directory", () => {
+    expect(normalizePath("./src/a.ts")).toBe("src/a.ts");
+    expect(normalizePath(".//src/a.ts")).toBe("src/a.ts");
+    expect(normalizePath("src//a.ts")).toBe("src/a.ts");
+    expect(normalizePath("src/dir/")).toBe("src/dir");
+    expect(normalizePath("/")).toBe("/");
+  });
+
+  it("leaves case and absolute paths alone", () => {
+    expect(normalizePath("src/App.ts")).toBe("src/App.ts");
+    expect(normalizePath("/abs/src/a.ts")).toBe("/abs/src/a.ts");
+  });
+});
+
 describe("pathOf", () => {
+  it("normalises the path it returns", () => {
+    expect(pathOf(read("a", "./src/app.ts", 1))).toBe("src/app.ts");
+  });
+
   it("reads input.path", () => {
     expect(pathOf(read("a", "src/app.ts", 1))).toBe("src/app.ts");
   });
@@ -26,6 +45,15 @@ describe("pathOf", () => {
 });
 
 describe("findSuperseded", () => {
+  it("matches paths that differ only in spelling", () => {
+    const superseded = findSuperseded(
+      [read("a", "src/app.ts", 2)],
+      [{ path: "./src/app.ts", messageIndex: 5, kind: "edit" }],
+    );
+    expect([...superseded]).toEqual(["a"]);
+  });
+
+
   it("marks a read whose file was edited afterwards", () => {
     const found = findSuperseded([read("a", "src/app.ts", 2)], [
       { path: "src/app.ts", messageIndex: 6, kind: "edit" },
