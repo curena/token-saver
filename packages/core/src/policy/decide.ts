@@ -17,7 +17,10 @@ export function decideLevel(
   const total = chunks.reduce((sum, chunk) => sum + chunk.tokens, 0);
   if (total === 0) return LEAVE;
 
-  const kept = chunks.filter((chunk) => (probabilities[chunk.index] ?? 0) >= config.keepThreshold);
+  // A chunk with no probability is kept, never dropped. judgeResult already
+  // fills a missing answer with 1, so this branch should be unreachable; if the
+  // two layers ever disagree, both must err towards leaving context intact.
+  const kept = chunks.filter((chunk) => (probabilities[chunk.index] ?? 1) >= config.keepThreshold);
   const keptTokens = kept.reduce((sum, chunk) => sum + chunk.tokens, 0);
 
   if (keptTokens >= total * config.leaveAloneRatio) return LEAVE;

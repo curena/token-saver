@@ -53,8 +53,31 @@ describe("decideLevel", () => {
     expect(plan.savedTokens).toBe(8900);
   });
 
-  it("stubs when there are no chunks to keep and probabilities are missing", () => {
+  it("keeps a chunk whose probability is missing", () => {
     const plan = decideLevel(chunks([3000]), [], DEFAULT_CONFIG);
-    expect(plan.level).toBe("stub");
+    expect(plan.level).toBe("leave");
+    expect(plan.savedTokens).toBe(0);
+  });
+
+  it("keeps the unscored chunk when the probabilities run short", () => {
+    const plan = decideLevel(chunks([2000, 2000, 2000]), [0.9, 0.01], DEFAULT_CONFIG);
+    expect(plan.keptChunks).toEqual([0, 2]);
+  });
+
+  it("treats leaveAloneRatio as inclusive", () => {
+    const at = decideLevel(chunks([7000, 3000]), [0.9, 0.01], DEFAULT_CONFIG);
+    expect(at.level).toBe("leave");
+    const under = decideLevel(chunks([6900, 3100]), [0.9, 0.01], DEFAULT_CONFIG);
+    expect(under.level).toBe("partial");
+    expect(under.savedTokens).toBe(3100 - 40);
+  });
+
+  it("treats minSaving as inclusive", () => {
+    // 1700 - 1160 - 40 = 500 exactly, with kept tokens under leaveAloneRatio.
+    const at = decideLevel(chunks([1160, 540]), [0.9, 0.01], DEFAULT_CONFIG);
+    expect(at.level).toBe("partial");
+    expect(at.savedTokens).toBe(500);
+    const under = decideLevel(chunks([1161, 539]), [0.9, 0.01], DEFAULT_CONFIG);
+    expect(under.level).toBe("leave");
   });
 });
