@@ -3,23 +3,22 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "n
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "@token-saver/core";
 import type { JevClient, JevRequest } from "@token-saver/core";
+import { parseArgs } from "./args.js";
 import { cachingClient } from "./jevCache.js";
 import { replaySession } from "./run.js";
-import { renderReport, summarize } from "./report.js";
+import { DEFAULT_PRICES, renderReport, summarize } from "./report.js";
 import type { TauRun } from "./report.js";
-
-// Anthropic-shaped defaults, per token.
-const DEFAULT_PRICES = { input: 3 / 1e6, cacheRead: 0.3 / 1e6, cacheWrite: 3.75 / 1e6 };
 
 function httpClient(): JevClient {
   const key = process.env.TYPESAFE_API_KEY;
   return {
-    async systemOne(request: JevRequest) {
+    async systemOne(request: JevRequest, signal?: AbortSignal) {
       if (key === undefined) throw new Error("TYPESAFE_API_KEY is not set");
       const response = await fetch("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
         body: JSON.stringify(request),
+        signal,
       });
       if (!response.ok) throw new Error(`typesafe ${response.status}`);
       return (await response.json()) as { answers: Record<string, { noul: number }> };
@@ -34,14 +33,7 @@ function sessionFiles(target: string): string[] {
     .map((name) => join(target, name));
 }
 
-function flag(name: string, fallback: string): string {
-  const index = process.argv.indexOf(`--${name}`);
-  return index === -1 ? fallback : process.argv[index + 1] ?? fallback;
-}
-
-const targets = process.argv.slice(2).filter((arg) => !arg.startsWith("--") && !arg.match(/^[\d.,/]+$/));
-const outDir = flag("report", "out");
-const taus = flag("tau", "0.3").split(",").map(Number);
+const { targets, tau: taus, report: outDir } = parseArgs(process.argv.slice(2));
 
 mkdirSync(outDir, { recursive: true });
 const client = cachingClient(httpClient(), join(outDir, "jev-cache.json"));

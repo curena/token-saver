@@ -2900,8 +2900,8 @@ git commit -m "feat(replay): session runner with cached Jev answers and miss tra
 ### Task 14: The replay CLI and report
 
 **Files:**
-- Create: `packages/replay/src/report.ts`, `packages/replay/src/cli.ts`
-- Test: `packages/replay/test/report.test.ts`
+- Create: `packages/replay/src/report.ts`, `packages/replay/src/args.ts`, `packages/replay/src/cli.ts`
+- Test: `packages/replay/test/report.test.ts`, `packages/replay/test/args.test.ts`
 
 **Interfaces:**
 - Consumes: `ReplayMetrics`.
@@ -2918,7 +2918,7 @@ git commit -m "feat(replay): session runner with cached Jev answers and miss tra
   };
   export function renderReport(runs: TauRun[]): string;   // markdown, one row per tau
   ```
-  CLI: `token-saver-replay <sessions-dir-or-file...> [--tau 0.1,0.3] [--report out/] [--model <pi model id>]`. It writes `out/report.md` and `out/metrics.json`, caches Jev answers in `out/jev-cache.json`, and prints the summary table.
+  CLI: `token-saver-replay <sessions-dir-or-file...> [--tau 0.1,0.3] [--report out/]`. It writes `out/report.md` and `out/metrics.json`, caches Jev answers in `out/jev-cache.json`, and prints the summary table.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3064,7 +3064,40 @@ export function renderReport(runs: TauRun[]): string {
 }
 ```
 
-- [ ] **Step 4: Implement the CLI**
+- [ ] **Step 4: Implement the arg parser and the CLI**
+
+`packages/replay/src/args.ts`:
+
+```ts
+export interface CliArgs {
+  targets: string[];
+  tau: number[];
+  report: string;
+}
+
+/** Parse positional session targets plus the --tau and --report flags,
+ * consuming each flag's value as a pair so a value like "out/" is never
+ * mistaken for a session path. */
+export function parseArgs(argv: string[]): CliArgs {
+  const targets: string[] = [];
+  let tau = [0.3];
+  let report = "out";
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--tau") {
+      tau = (argv[++i] ?? "0.3").split(",").map(Number);
+      continue;
+    }
+    if (arg === "--report") {
+      report = argv[++i] ?? "out";
+      continue;
+    }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    targets.push(arg);
+  }
+  return { targets, tau, report };
+}
+```
 
 `packages/replay/src/cli.ts`:
 
@@ -3074,23 +3107,22 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "n
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "@token-saver/core";
 import type { JevClient, JevRequest } from "@token-saver/core";
+import { parseArgs } from "./args.js";
 import { cachingClient } from "./jevCache.js";
 import { replaySession } from "./run.js";
-import { renderReport, summarize } from "./report.js";
+import { DEFAULT_PRICES, renderReport, summarize } from "./report.js";
 import type { TauRun } from "./report.js";
-
-// Anthropic-shaped defaults, per token.
-const DEFAULT_PRICES = { input: 3 / 1e6, cacheRead: 0.3 / 1e6, cacheWrite: 3.75 / 1e6 };
 
 function httpClient(): JevClient {
   const key = process.env.TYPESAFE_API_KEY;
   return {
-    async systemOne(request: JevRequest) {
+    async systemOne(request: JevRequest, signal?: AbortSignal) {
       if (key === undefined) throw new Error("TYPESAFE_API_KEY is not set");
       const response = await fetch("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
         body: JSON.stringify(request),
+        signal,
       });
       if (!response.ok) throw new Error(`typesafe ${response.status}`);
       return (await response.json()) as { answers: Record<string, { noul: number }> };
@@ -3105,14 +3137,7 @@ function sessionFiles(target: string): string[] {
     .map((name) => join(target, name));
 }
 
-function flag(name: string, fallback: string): string {
-  const index = process.argv.indexOf(`--${name}`);
-  return index === -1 ? fallback : process.argv[index + 1] ?? fallback;
-}
-
-const targets = process.argv.slice(2).filter((arg) => !arg.startsWith("--") && !arg.match(/^[\d.,/]+$/));
-const outDir = flag("report", "out");
-const taus = flag("tau", "0.3").split(",").map(Number);
+const { targets, tau: taus, report: outDir } = parseArgs(process.argv.slice(2));
 
 mkdirSync(outDir, { recursive: true });
 const client = cachingClient(httpClient(), join(outDir, "jev-cache.json"));

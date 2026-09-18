@@ -6,12 +6,27 @@ export interface TauRun {
   metrics: ReplayMetrics[];
 }
 
+export interface Summary {
+  tokensBefore: number;
+  tokensAfter: number;
+  savedPct: number;
+  sweeps: number;
+  stubbed: number;
+  partial: number;
+  misses: number;
+  jevRequests: number;
+  jevUsd: number;
+  rewrittenTokens: number;
+  sweepMs: number;
+  netUsd: number;
+}
+
 export const JEV_PRICE_PER_TOKEN = 0.042 / 1e6;
 
 /** Anthropic-shaped defaults, per token. */
-const DEFAULT_PRICES: Prices = { input: 3 / 1e6, cacheRead: 0.3 / 1e6, cacheWrite: 3.75 / 1e6 };
+export const DEFAULT_PRICES: Prices = { input: 3 / 1e6, cacheRead: 0.3 / 1e6, cacheWrite: 3.75 / 1e6 };
 
-export function summarize(all: ReplayMetrics[], prices: Prices = DEFAULT_PRICES) {
+export function summarize(all: ReplayMetrics[], prices: Prices = DEFAULT_PRICES): Summary {
   const total = all.reduce(
     (sum, metrics) => ({
       tokensBefore: sum.tokensBefore + metrics.tokensBefore,
@@ -42,7 +57,20 @@ export function summarize(all: ReplayMetrics[], prices: Prices = DEFAULT_PRICES)
     total.rewrittenTokens * prices.cacheWrite -
     jevUsd;
 
-  return { ...total, savedPct, jevUsd, netUsd };
+  return {
+    tokensBefore: total.tokensBefore,
+    tokensAfter: total.tokensAfter,
+    savedPct,
+    sweeps: total.sweeps,
+    stubbed: total.stubbed,
+    partial: total.partial,
+    misses: total.misses,
+    jevRequests: total.jevRequests,
+    jevUsd,
+    rewrittenTokens: total.rewrittenTokens,
+    sweepMs: total.sweepMs,
+    netUsd,
+  };
 }
 
 export function renderReport(runs: TauRun[]): string {
@@ -55,12 +83,12 @@ export function renderReport(runs: TauRun[]): string {
   for (const run of runs) {
     const s = summarize(run.metrics);
     lines.push(
-      `| ${run.tau} | ${s.tokensBefore.toLocaleString()} | ${s.tokensAfter.toLocaleString()} | ` +
+      `| ${run.tau} | ${s.tokensBefore.toLocaleString("en-US")} | ${s.tokensAfter.toLocaleString("en-US")} | ` +
       `${s.savedPct.toFixed(1)}% | ${s.sweeps} | ${s.stubbed} | ${s.partial} | ${s.misses} | ` +
       `${s.jevRequests} | ${s.jevUsd.toFixed(4)} | ${s.netUsd.toFixed(4)} |`,
     );
   }
-  lines.push("", "A miss is an elided chunk whose text the agent used later: it would have cost a recall.");
+  lines.push("", "A miss is an elided chunk whose text the agent later used: it would have cost a recall.");
   lines.push("", "Net $ is cache reads avoided minus cache writes paid minus Jev spend, at Anthropic prices.");
   return lines.join("\n");
 }
