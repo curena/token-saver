@@ -25,6 +25,18 @@ describe("describeResult", () => {
     expect(describeResult(bash).length).toBeLessThanOrEqual(60);
   });
 
+  it("keeps the budget when the tool name alone overruns it", () => {
+    const long = { ...result, toolName: "mcp__a_very_long_plugin_name__with_a_very_long_tool_name_indeed", input: { command: "ls" } };
+    expect(describeResult(long).length).toBeLessThanOrEqual(60);
+    expect(describeResult(long).endsWith("…")).toBe(true);
+  });
+
+  it("truncates a long command to the budget", () => {
+    const long = { ...result, toolName: "bash", input: { command: "echo ".repeat(40) } };
+    expect(describeResult(long).length).toBe(60);
+    expect(describeResult(long)).toMatch(/^bash: echo /);
+  });
+
   it("falls back to the tool name", () => {
     expect(describeResult({ ...result, toolName: "grep", input: {} })).toBe("grep");
   });
@@ -65,6 +77,19 @@ describe("renderPartial", () => {
     const text = renderPartial(result, chunks, [0, 2]);
     expect(text).not.toContain("gamma");
     expect(text).not.toContain("delta");
+  });
+
+  it("marks a gap that starts at line 1", () => {
+    const text = renderPartial(result, chunks, [2]);
+    expect(text).toContain("… lines 1–4 elided …");
+    expect(text).toContain("   5| epsilon");
+  });
+
+  it("marks a gap that runs to the end of the result", () => {
+    const text = renderPartial(result, chunks, [0]);
+    expect(text).toContain("   1| alpha");
+    expect(text).toContain("… lines 3–5 elided …");
+    expect(text).not.toContain("epsilon");
   });
 
   it("emits kept chunks in line order regardless of the kept list order", () => {

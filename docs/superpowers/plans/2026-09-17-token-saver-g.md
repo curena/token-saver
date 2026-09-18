@@ -1068,14 +1068,23 @@ import { pathOf } from "./policy/staleness.js";
 
 const MARKER = "[token-saver]";
 
+/** Budget for a command description. A path is never truncated: it is the one
+ *  part of a stub the agent needs intact to decide whether to recall it. */
+const MAX_COMMAND_DESCRIPTION = 60;
+
+function truncate(text: string, limit: number): string {
+  return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
+}
+
 export function describeResult(result: ResultRef): string {
   const path = pathOf(result);
   if (path !== null) return `${result.toolName} ${path}`;
   const command = result.input.command;
   if (typeof command === "string") {
     const head = command.split("\n")[0]!;
-    const room = 60 - result.toolName.length - 2;
-    return `${result.toolName}: ${head.length > room ? `${head.slice(0, room - 1)}…` : head}`;
+    // Truncate the whole composed string, not just the command: an MCP tool
+    // name can be longer than the budget on its own.
+    return truncate(`${result.toolName}: ${head}`, MAX_COMMAND_DESCRIPTION);
   }
   return result.toolName;
 }
