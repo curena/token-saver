@@ -3242,7 +3242,7 @@ git commit -m "docs: replay baseline over recorded sessions, tune keepThreshold"
 ### Task 16: The pi extension skeleton: config, state, and applying decisions
 
 **Files:**
-- Create: `packages/pi/package.json`, `packages/pi/tsconfig.json`, `packages/pi/build.mjs`, `packages/pi/src/state.ts`, `packages/pi/src/jev.ts`, `packages/pi/src/index.ts`
+- Create: `packages/pi/package.json`, `packages/pi/tsconfig.json`, `packages/pi/build.mjs`, `packages/pi/src/state.ts`, `packages/pi/src/jev.ts`
 - Test: `packages/pi/test/state.test.ts`
 
 **Interfaces:**
