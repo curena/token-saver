@@ -45,6 +45,15 @@ describe("chunkResult", () => {
     expect(chunks[1]!.text.startsWith("2:0")).toBe(true);
   });
 
+  it("keeps a run of blank lines at the tail of the chunk it closes", () => {
+    const block = (n: number) => Array.from({ length: 25 }, (_, i) => `${n}:${i}`).join("\n");
+    const text = `${block(1)}\n\n\n\n${block(2)}`;
+    const chunks = chunkResult("bash", text);
+    expect(chunks.length).toBe(2);
+    expect(chunks[1]!.text.startsWith("2:0")).toBe(true);
+    expect(chunks.map((c) => c.text).join("\n")).toBe(text);
+  });
+
   it("keeps chunks within the per-tool maximum", () => {
     const text = Array.from({ length: 500 }, (_, i) => line(i)).join("\n");
     for (const [tool, max] of [["read", 60], ["bash", 40], ["other", 40]] as const) {

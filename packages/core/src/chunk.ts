@@ -4,7 +4,9 @@ import { estimateTokens } from "./tokens.js";
 /**
  * `isBoundary(line, previous)` answers "does a new chunk start AT `line`?".
  * Blank-line separation keys off `previous`, so the blank ends the chunk
- * before it rather than heading the chunk after it.
+ * before it rather than heading the chunk after it. A blank line never starts
+ * a chunk, so a run of several blanks stays wholly at the tail of the chunk
+ * it closes.
  */
 interface Shape {
   min: number;
@@ -19,14 +21,16 @@ const SHAPES: Record<string, Shape> = {
     min: 20,
     max: 60,
     isBoundary: (line, previous) =>
-      DECLARATION.test(line) || (previous !== undefined && previous.trim() === ""),
+      DECLARATION.test(line) ||
+      (previous !== undefined && previous.trim() === "" && line.trim() !== ""),
   },
   bash: {
     min: 20,
     max: 40,
     isBoundary: (line, previous) =>
       previous !== undefined &&
-      (previous.trim() === "" || (line.trim() !== "" && prefix(line) !== prefix(previous))),
+      line.trim() !== "" &&
+      (previous.trim() === "" || prefix(line) !== prefix(previous)),
   },
   generic: { min: 40, max: 40, isBoundary: () => false },
 };
