@@ -35,6 +35,12 @@ npx tsx packages/replay/src/cli.ts ~/.pi/agent/sessions --tau 0.1,0.2,0.3,0.5 --
 Output: `out/report.md` + `out/metrics.json` (tokens saved, misses, cost-gate spend).
 Jev answers cache to `out/jev-cache.json`, so re-runs are free.
 
+> Caveats (from the 2026-09-18 baseline run): exclude any **actively-running** session —
+> it grows while the replay walks it. And the report's `net $` uses **hardcoded Anthropic
+> cache prices** and measures dollar cost only; it does not capture the context-window win
+> (fewer compactions), which may be the real reason to use token-saver. See
+> `replay-baseline.md` for the full notes.
+
 ## Step 2 — Live session
 
 Start pi with the flag, then:

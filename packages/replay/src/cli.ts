@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "@token-saver/core";
 import type { JevClient, JevRequest } from "@token-saver/core";
 import { parseArgs } from "./args.js";
+import { readSessionFiles } from "./files.js";
 import { cachingClient } from "./jevCache.js";
 import { replaySession } from "./run.js";
 import { DEFAULT_PRICES, renderReport, summarize } from "./report.js";
@@ -38,15 +39,18 @@ const { targets, tau: taus, report: outDir } = parseArgs(process.argv.slice(2));
 mkdirSync(outDir, { recursive: true });
 const client = cachingClient(httpClient(), join(outDir, "jev-cache.json"));
 const files = targets.flatMap(sessionFiles);
+// Snapshot the files once: every tau run must see identical input, otherwise a
+// session that grows mid-run (a live one being appended to) skews later taus.
+const sessions = readSessionFiles(files);
 const runs: TauRun[] = [];
 
 for (const tau of taus) {
   const metrics = [];
-  for (const file of files) {
+  for (const session of sessions) {
     metrics.push(
       await replaySession(
-        readFileSync(file, "utf8"),
-        file,
+        session.text,
+        session.file,
         client,
         { ...DEFAULT_CONFIG, keepThreshold: tau },
         DEFAULT_PRICES,
