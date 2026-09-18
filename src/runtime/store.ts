@@ -54,17 +54,22 @@ export class Store {
   lastAudit(): AuditEntry | null {
     const file = join(this.dir("audit"), "log.jsonl");
     if (!existsSync(file)) return null;
-    const lines = readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
-    if (lines.length === 0) return null;
-    // Skip back to the last parseable line; truncation during append is the most likely corruption
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        return JSON.parse(lines[i]) as AuditEntry;
-      } catch {
-        // This line is corrupt, try the previous one
+    try {
+      const lines = readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
+      if (lines.length === 0) return null;
+      // Skip back to the last parseable line; truncation during append is the most likely corruption
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          return JSON.parse(lines[i]) as AuditEntry;
+        } catch {
+          // This line is corrupt, try the previous one
+        }
       }
+      return null;
+    } catch {
+      // readFileSync failed (permissions, is a directory, etc.)
+      return null;
     }
-    return null;
   }
 
   readFingerprint(): string | null {

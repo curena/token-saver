@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -75,5 +75,17 @@ describe("Store", () => {
         applied: { x: "on" },
       });
     }).toThrow(/previous\[.*x.*\].*must be a string/);
+  });
+
+  it("returns null when readFileSync fails (e.g., log file is a directory)", () => {
+    const store = new Store(root);
+    const auditDir = store.dir("audit");
+    const logFile = join(auditDir, "log.jsonl");
+
+    // Create a directory where the file should be to make readFileSync fail
+    mkdirSync(logFile, { recursive: true });
+
+    // Should return null without throwing
+    expect(new Store(root).lastAudit()).toBeNull();
   });
 });
