@@ -1,0 +1,188 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { scanClaudeCode } from "../../src/audit/inventory-claude-code.js";
+
+let root: string;
+
+function writeSkill(dir: string, name: string, frontmatter: string, body = "Body text.") {
+  const path = join(dir, name);
+  mkdirSync(path, { recursive: true });
+  writeFileSync(join(path, "SKILL.md"), `---\n${frontmatter}\n---\n\n${body}\n`, "utf8");
+}
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "ts-inv-"));
+  for (const d of ["user", "project", "plugin"]) mkdirSync(join(root, d), { recursive: true });
+});
+afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+function scan() {
+  return scanClaudeCode({
+    userSkillsDir: join(root, "user"),
+    projectSkillsDir: join(root, "project"),
+    pluginSkillDirs: [join(root, "plugin")],
+    settingsPath: join(root, "settings.local.json"),
+  });
+}
+
+describe("scanClaudeCode", () => {
+  it("finds skills in the user and project directories", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: Work with PDFs");
+    writeSkill(join(root, "project"), "deploy", "name: deploy\ndescription: Ship the app");
+    expect(scan().map((i) => i.id).sort()).toEqual(["deploy", "pdf"]);
+  });
+
+  it("reads the description from frontmatter and estimates tokens", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: Work with PDF files");
+    const item = scan()[0];
+    expect(item.description).toBe("Work with PDF files");
+    expect(item.tokens).toBeGreaterThan(0);
+  });
+
+  it("appends when_to_use to the description", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs\nwhen_to_use: When a .pdf is mentioned");
+    expect(scan()[0].description).toBe("PDFs When a .pdf is mentioned");
+  });
+
+  it("marks plugin skills unmanaged", () => {
+    writeSkill(join(root, "plugin"), "chart", "name: chart\ndescription: Make charts");
+    const item = scan()[0];
+    expect(item.kind).toBe("plugin-skill");
+    expect(item.managed).toBe(false);
+  });
+
+  it("reads the current state from skillOverrides", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    writeFileSync(
+      join(root, "settings.local.json"),
+      JSON.stringify({ skillOverrides: { pdf: "name-only" } }),
+      "utf8",
+    );
+    expect(scan()[0].currentState).toBe("name-only");
+  });
+
+  it("defaults the state to on when settings do not mention the skill", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    expect(scan()[0].currentState).toBe("on");
+  });
+
+  it("skips a directory without SKILL.md", () => {
+    mkdirSync(join(root, "user", "not-a-skill"), { recursive: true });
+    expect(scan()).toHaveLength(0);
+  });
+
+  it("skips a skill whose frontmatter has no description", () => {
+    writeSkill(join(root, "user"), "bare", "name: bare");
+    expect(scan()).toHaveLength(0);
+  });
+
+  it("survives a missing skills directory", () => {
+    rmSync(join(root, "project"), { recursive: true, force: true });
+    expect(() => scan()).not.toThrow();
+  });
+
+  it("survives a settings file that is not JSON", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    writeFileSync(join(root, "settings.local.json"), "{not json", "utf8");
+    expect(() => scan()).not.toThrow();
+    expect(scan()[0].currentState).toBe("on");
+  });
+
+  it("survives an empty settings file", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    writeFileSync(join(root, "settings.local.json"), "", "utf8");
+    expect(() => scan()).not.toThrow();
+    expect(scan()[0].currentState).toBe("on");
+  });
+
+  it("ignores skillOverrides that is not an object", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    writeFileSync(
+      join(root, "settings.local.json"),
+      JSON.stringify({ skillOverrides: "not-an-object" }),
+      "utf8",
+    );
+    expect(() => scan()).not.toThrow();
+    expect(scan()[0].currentState).toBe("on");
+  });
+
+  it("ignores an unknown state value in skillOverrides", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    writeFileSync(
+      join(root, "settings.local.json"),
+      JSON.stringify({ skillOverrides: { pdf: "disabled-forever" } }),
+      "utf8",
+    );
+    expect(scan()[0].currentState).toBe("on");
+  });
+
+  it("survives a settings file that is a directory", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    mkdirSync(join(root, "settings.local.json"), { recursive: true });
+    expect(() => scan()).not.toThrow();
+    expect(scan()[0].currentState).toBe("on");
+  });
+
+  it("skips a skill whose SKILL.md is actually a directory", () => {
+    mkdirSync(join(root, "user", "weird", "SKILL.md"), { recursive: true });
+    expect(() => scan()).not.toThrow();
+    expect(scan()).toHaveLength(0);
+  });
+
+  it("skips a skill whose frontmatter has no closing fence", () => {
+    const path = join(root, "user", "broken");
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, "SKILL.md"), "---\nname: broken\ndescription: Broken\n", "utf8");
+    expect(scan()).toHaveLength(0);
+  });
+
+  it("skips a skill with no frontmatter block at all", () => {
+    const path = join(root, "user", "nofm");
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, "SKILL.md"), "Just a plain markdown file.\n", "utf8");
+    expect(() => scan()).not.toThrow();
+    expect(scan()).toHaveLength(0);
+  });
+
+  it("ignores a plain file sitting in the skills directory", () => {
+    writeFileSync(join(root, "user", "notes.txt"), "hello", "utf8");
+    expect(() => scan()).not.toThrow();
+    expect(scan()).toHaveLength(0);
+  });
+
+  it("refuses to read a settings path that matches the secrets denylist", () => {
+    const denied = join(root, ".env");
+    writeFileSync(denied, JSON.stringify({ skillOverrides: { pdf: "off" } }), "utf8");
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    const items = scanClaudeCode({
+      userSkillsDir: join(root, "user"),
+      projectSkillsDir: join(root, "project"),
+      pluginSkillDirs: [join(root, "plugin")],
+      settingsPath: denied,
+    });
+    expect(items[0].currentState).toBe("on");
+  });
+
+  it("survives a missing project directory and a missing plugin directory together", () => {
+    rmSync(join(root, "project"), { recursive: true, force: true });
+    rmSync(join(root, "plugin"), { recursive: true, force: true });
+    expect(scanClaudeCode({
+      userSkillsDir: join(root, "user"),
+      projectSkillsDir: join(root, "project"),
+      pluginSkillDirs: [join(root, "plugin")],
+      settingsPath: join(root, "settings.local.json"),
+    })).toEqual([]);
+  });
+
+  it("works when pluginSkillDirs is omitted", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    const items = scanClaudeCode({
+      userSkillsDir: join(root, "user"),
+      projectSkillsDir: join(root, "project"),
+      settingsPath: join(root, "settings.local.json"),
+    });
+    expect(items.map((i) => i.id)).toEqual(["pdf"]);
+  });
+});
