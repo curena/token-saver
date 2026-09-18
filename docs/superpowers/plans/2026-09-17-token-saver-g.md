@@ -2510,7 +2510,7 @@ describe("detectMisses", () => {
 
   it("reports an elided chunk whose line the agent later used", () => {
     const misses = detectMisses("call_1", chunks, [0.1, 0.05], [0, 1], [
-      { text: "the call to session.create(credentials); is wrong", kind: "assistant" },
+      { text: "return session.create(credentials); is wrong here", kind: "assistant" },
     ]);
     expect(misses).toEqual([{ resultId: "call_1", chunkIndex: 0, probability: 0.1, evidence: "assistant" }]);
   });
