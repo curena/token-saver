@@ -42,6 +42,12 @@ export class Store {
   }
 
   appendAudit(entry: AuditEntry): void {
+    // Validate that all values in previous are strings (JSON.stringify silently drops undefined)
+    for (const [key, value] of Object.entries(entry.previous)) {
+      if (typeof value !== "string") {
+        throw new Error(`appendAudit: entry.previous[${JSON.stringify(key)}] must be a string, got ${typeof value}`);
+      }
+    }
     appendFileSync(join(this.dir("audit"), "log.jsonl"), `${JSON.stringify(entry)}\n`, "utf8");
   }
 
@@ -50,12 +56,25 @@ export class Store {
     if (!existsSync(file)) return null;
     const lines = readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
     if (lines.length === 0) return null;
-    return JSON.parse(lines[lines.length - 1]) as AuditEntry;
+    // Skip back to the last parseable line; truncation during append is the most likely corruption
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        return JSON.parse(lines[i]) as AuditEntry;
+      } catch {
+        // This line is corrupt, try the previous one
+      }
+    }
+    return null;
   }
 
   readFingerprint(): string | null {
     const file = join(this.dir("audit"), "fingerprint");
-    return existsSync(file) ? readFileSync(file, "utf8").trim() : null;
+    if (!existsSync(file)) return null;
+    try {
+      return readFileSync(file, "utf8").trim();
+    } catch {
+      return null;
+    }
   }
 
   writeFingerprint(value: string): void {
