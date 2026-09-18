@@ -81,15 +81,40 @@ describe("buildProfile", () => {
     expect(manifests).not.toContain("ghp_1234567890abcdefghijklmnopqrstuvwxyz");
   });
 
-  it("excludes denylisted paths from the tree", () => {
+  it("excludes denylisted paths from the tree, including denylisted directories", () => {
     mkdirSync(join(root, "secrets"));
     writeFileSync(join(root, "secrets", "x.txt"), "hi", "utf8");
-    writeFileSync(join(root, "id_rsa"), "hi", "utf8");
+    writeFileSync(join(root, "prod.pem"), "hi", "utf8");
+    // Directories, not files: these are exactly what the trailing-slash workaround got
+    // wrong (id_* and *.pem are $-anchored, so appending "/" for directories made a
+    // directory literally named id_rsa or x.pem stop matching its own pattern).
+    mkdirSync(join(root, "id_rsa"));
+    mkdirSync(join(root, "x.pem"));
     mkdirSync(join(root, "src"));
     const tree = buildProfile(root, []).tree;
     expect(tree).toContain("src/");
     expect(tree.join()).not.toContain("secrets");
+    expect(tree.join()).not.toContain("prod.pem");
     expect(tree.join()).not.toContain("id_rsa");
+    expect(tree.join()).not.toContain("x.pem");
+  });
+
+  it("redacts a secret even when it straddles the README's 2000-char limit", () => {
+    // A 43-char high-entropy identifier (the same one pinned in redact.test.ts as a
+    // known looksRandom hit), positioned so the 2000-char cut falls in the middle of
+    // it: with 1979 filler chars + a separating space, the secret runs from index
+    // 1980 to 2021 — straddling the cut at 2000. Slicing first would leave only the
+    // secret's first 20 chars ("getUserProfileByIdV2") past the cut, too short
+    // (<24 chars) for looksRandom to catch, and that fragment would ship in
+    // cleartext. Redacting first (what buildProfile does now) removes the whole
+    // secret before the cut ever runs.
+    const secret = "getUserProfileByIdV2EndpointHandler123456";
+    const padding = "a".repeat(1979);
+    writeFileSync(join(root, "README.md"), `${padding} ${secret}`, "utf8");
+    const readme = buildProfile(root, []).readme;
+    expect(readme).not.toContain(secret);
+    expect(readme).not.toContain("getUserProfileByIdV2"); // the fragment the old order leaked
+    expect(readme).toContain("[REDACTED]");
   });
 
   it("caps the tree and marks how many entries were hidden", () => {

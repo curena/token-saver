@@ -31,13 +31,17 @@ export function buildProfile(root: string, prompts: string[]): ProjectProfile {
   const readmePath = ["README.md", "readme.md", "README"]
     .map((name) => join(root, name))
     .find((path) => existsSync(path));
-  const readme = redact((readmePath && tryRead(readmePath)?.slice(0, README_LIMIT)) ?? "");
+  // Redact BEFORE slicing: a high-entropy secret straddling the char limit could be cut
+  // to fewer than 24 chars by `.slice()` first, which is too short for `looksRandom` to
+  // catch, and the fragment would ship in cleartext.
+  const rawReadme = readmePath ? (tryRead(readmePath) ?? "") : "";
+  const readme = redact(rawReadme).slice(0, README_LIMIT);
 
   const manifests: string[] = [];
   for (const name of MANIFESTS) {
     const contents = tryRead(join(root, name));
     if (contents !== null) {
-      manifests.push(redact(`${name}: ${contents.slice(0, MANIFEST_LIMIT)}`));
+      manifests.push(`${name}: ${redact(contents).slice(0, MANIFEST_LIMIT)}`);
     }
   }
 
@@ -46,12 +50,7 @@ export function buildProfile(root: string, prompts: string[]): ProjectProfile {
     try {
       tree = readdirSync(root, { withFileTypes: true })
         .filter((entry) => !entry.name.startsWith("."))
-        .filter((entry) => {
-          // A directory needs the trailing slash for the denylist's `secrets/` pattern to
-          // match; a bare `join(root, "secrets")` (no trailing slash) would not.
-          const path = join(root, entry.name) + (entry.isDirectory() ? "/" : "");
-          return !isDenylistedPath(path);
-        })
+        .filter((entry) => !isDenylistedPath(join(root, entry.name)))
         .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
         .sort();
     } catch {

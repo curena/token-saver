@@ -14,7 +14,7 @@ const DENYLIST: RegExp[] = [
   /(^|\/)\.env(\.[^/]*)?$/,
   /\.pem$/,
   /(^|\/)id_[A-Za-z0-9_]+$/,
-  /(^|\/)secrets\//,
+  /(^|\/)secrets(\/|$)/,
 ];
 
 /**

@@ -38,4 +38,11 @@ describe("redact", () => {
     expect(isDenylistedPath("/home/u/p/secrets/keys.json")).toBe(true);
     expect(isDenylistedPath("/home/u/p/src/index.ts")).toBe(false);
   });
+
+  // A bare directory path (no trailing slash) must match too — callers that enumerate a
+  // directory listing (e.g. src/audit/profile.ts's tree) pass exactly this shape.
+  it("flags a bare secrets directory path, with no trailing slash, as well as a nested one", () => {
+    expect(isDenylistedPath("/p/secrets")).toBe(true);
+    expect(isDenylistedPath("/p/secrets/x")).toBe(true);
+  });
 });
