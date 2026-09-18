@@ -1,0 +1,8 @@
+{
+  "name": "@token-saver/pi",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": { "build": "node build.mjs" },
+  "dependencies": { "@token-saver/core": "*" },
+  "devDependencies": { "esbuild": "^0.24.0", "@earendil-works/pi-coding-agent": "^0.85.1" }
+}
