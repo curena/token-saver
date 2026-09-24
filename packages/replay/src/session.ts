@@ -41,6 +41,21 @@ function textOf(content: unknown): string {
     .join("\n");
 }
 
+/** Everything the message puts in the context: its text plus any tool-call arguments. */
+function contextTextOf(content: unknown): string {
+  const parts = [textOf(content)];
+  for (const block of Array.isArray(content) ? content : []) {
+    const call = block as { type?: string; arguments?: unknown };
+    if (call.type === "toolCall") parts.push(JSON.stringify(call.arguments ?? {}));
+  }
+  return parts.filter((part) => part.length > 0).join("\n");
+}
+
+function lineArg(value: unknown): number | undefined {
+  const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+}
+
 function pathArg(args: Record<string, unknown>): string | null {
   for (const key of ["path", "file_path"]) {
     const value = args[key];
@@ -60,6 +75,9 @@ export function parseSession(jsonl: string): CallSite[] {
   const touches: FileTouch[] = [];
   const userMessages: string[] = [];
   const tokenCounts: number[] = [0]; // tokenCounts[messageIndex]; 0 is a never-used sentinel
+  // Touches are copied into each call site, so an outcome is recorded by
+  // replacing the touch object, never by mutating one a site already holds.
+  const touchIndexById = new Map<string, number>();
   const callsById = new Map<string, { name: string; args: Record<string, unknown>; turn: number }>();
   let userTurn = 0;
   let latestAssistantText = "";
@@ -69,7 +87,9 @@ export function parseSession(jsonl: string): CallSite[] {
     if (entry.type !== "message" || entry.message === undefined) continue;
     const message = entry.message;
     messageIndex++;
-    tokenCounts[messageIndex] = estimateTokens(textOf(message.content));
+    const messageTokens = estimateTokens(contextTextOf(message.content));
+
+    if (message.role !== "assistant") tokenCounts[messageIndex] = messageTokens;
 
     if (message.role === "user") {
       userTurn++;
@@ -79,6 +99,10 @@ export function parseSession(jsonl: string): CallSite[] {
 
     if (message.role === "toolResult") {
       const call = callsById.get(message.toolCallId ?? "");
+      const touchIndex = touchIndexById.get(message.toolCallId ?? "");
+      if (touchIndex !== undefined) {
+        touches[touchIndex] = { ...touches[touchIndex]!, isError: message.isError === true };
+      }
       const text = textOf(message.content);
       results.push({
         id: message.toolCallId ?? `unknown_${messageIndex}`,
@@ -98,7 +122,7 @@ export function parseSession(jsonl: string): CallSite[] {
     // A call site is the context as it stood when the model was asked to produce
     // THIS message, so it is recorded before this message's own tool calls are.
     const workingFiles = [...new Set(
-      touches.filter((t) => t.kind !== "read").map((t) => t.path),
+      touches.filter((t) => t.kind !== "read" && t.isError !== true).map((t) => t.path),
     )];
 
     sites.push({
@@ -117,7 +141,9 @@ export function parseSession(jsonl: string): CallSite[] {
       tokenCounts: [...tokenCounts],
     });
 
-    latestAssistantText = textOf(message.content);
+    // Only now does this message join the context seen by later calls.
+    tokenCounts[messageIndex] = messageTokens;
+    latestAssistantText = textOf(message.content) || latestAssistantText;
 
     for (const block of Array.isArray(message.content) ? message.content : []) {
       const call = block as { type?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
@@ -126,7 +152,16 @@ export function parseSession(jsonl: string): CallSite[] {
       callsById.set(call.id, { name: call.name, args, turn: userTurn });
       const kind = TOUCH_KIND[call.name];
       const path = pathArg(args);
-      if (kind !== undefined && path !== null) touches.push({ path, messageIndex, kind });
+      if (kind === undefined || path === null) continue;
+      const touch: FileTouch = { path, messageIndex, kind };
+      if (kind === "read") {
+        const offset = lineArg(args.offset);
+        const limit = lineArg(args.limit);
+        if (offset !== undefined) touch.offset = offset;
+        if (limit !== undefined) touch.limit = limit;
+      }
+      touchIndexById.set(call.id, touches.length);
+      touches.push(touch);
     }
   }
 

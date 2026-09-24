@@ -57,3 +57,22 @@ describe("replaySession", () => {
     expect(metrics.stubbed + metrics.partial).toBeLessThanOrEqual(2);
   });
 });
+describe("replaySession retention", () => {
+  const config = { ...DEFAULT_CONFIG, minResultTokens: 1, protectTurns: 0, minSaving: 0 };
+  const quoted = "export function login(credentials: Credentials): Session {";
+
+  it("does not count uses made while the result was still fully visible", async () => {
+    // call_1 is only eligible at the third call (turnsAgo 1); "Now editing" is
+    // written at the second call, while the result is still in full.
+    const early = jsonl.replace('"text":"Now editing"', `"text":${JSON.stringify(`Now editing ${quoted}`)}`);
+    const metrics = await replaySession(early, "fixture", stale, config, PRICES);
+    expect(metrics.stubbed + metrics.partial).toBeGreaterThan(0);
+    expect(metrics.misses).toEqual([]);
+  });
+
+  it("counts uses made after the sweep point", async () => {
+    const late = jsonl.replace('"text":"Running"', `"text":${JSON.stringify(`Running ${quoted}`)}`);
+    const metrics = await replaySession(late, "fixture", stale, config, PRICES);
+    expect(metrics.misses.some((miss) => miss.resultId === "call_1")).toBe(true);
+  });
+});

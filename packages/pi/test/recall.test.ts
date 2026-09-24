@@ -46,3 +46,37 @@ describe("recall", () => {
     expect(result.content[0].text).toContain("missing");
   });
 });
+
+describe("recall of a read with an offset", () => {
+  // `read a.ts offset=200` returns file lines 200.. as result lines 1..; the
+  // sweep's "… lines N–M elided …" markers use real file line numbers.
+  const offsetEntries = [
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_read", name: "read", arguments: { path: "a.ts", offset: 200 } }],
+      },
+    },
+    {
+      type: "message",
+      message: {
+        role: "toolResult", toolCallId: "call_read",
+        content: [{ type: "text", text: Array.from({ length: 10 }, (_, i) => `line ${200 + i}`).join("\n") }],
+      },
+    },
+  ];
+  const source = sessionSource(offsetEntries);
+
+  it("interprets startLine/endLine as real file lines, matching the elided markers", () => {
+    expect(recall(source, { id: "call_read", startLine: 203, endLine: 205 }).content[0].text)
+      .toBe("line 203\nline 204\nline 205");
+  });
+
+  it("clamps file-line ranges to the lines the result holds", () => {
+    expect(recall(source, { id: "call_read", startLine: 1, endLine: 201 }).content[0].text)
+      .toBe("line 200\nline 201");
+    expect(recall(source, { id: "call_read", startLine: 208, endLine: 999 }).content[0].text)
+      .toBe("line 208\nline 209");
+  });
+});

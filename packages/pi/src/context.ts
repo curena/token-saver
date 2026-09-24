@@ -1,4 +1,4 @@
-import { estimateTokens, runSweep, selectEligible } from "@token-saver/core";
+import { estimateTokens, findSuperseded, runSweep, selectEligible } from "@token-saver/core";
 import type {
   Config, FileTouch, JevClient, Prices, ResultRef, SweepOutcome, TaskState,
 } from "@token-saver/core";
@@ -49,6 +49,47 @@ function textOf(content: unknown): string {
     .join("\n");
 }
 
+/**
+ * Tokens a message contributes to a rewritten suffix: its text plus any
+ * assistant tool-call arguments (write payloads, edit strings), which the
+ * provider re-sends just like text.
+ */
+function messageTokens(content: unknown): number {
+  let tokens = estimateTokens(textOf(content));
+  if (!Array.isArray(content)) return tokens;
+  for (const block of content) {
+    const call = block as { type?: string; name?: string; arguments?: unknown };
+    if (call.type !== "toolCall") continue;
+    tokens += estimateTokens(`${call.name ?? ""}${JSON.stringify(call.arguments ?? {})}`);
+  }
+  return tokens;
+}
+
+function lineArg(value: unknown): number | undefined {
+  const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * Results Jev judged and left alone, with the user turn they were judged in.
+ * Within one agent run the user turn does not advance, so the cost trigger
+ * would otherwise re-send the same large "leave" results to Jev on every model
+ * call. They are skipped until the next user message: the task Jev judges
+ * against is the recent user messages, so a new one is what can change the
+ * verdict. Keyed by store so each session's store carries its own memory
+ * without the caller threading more state.
+ */
+const leftAloneByStore = new WeakMap<DecisionStore, Map<string, number>>();
+
+function leftAloneFor(store: DecisionStore): Map<string, number> {
+  let map = leftAloneByStore.get(store);
+  if (map === undefined) {
+    map = new Map();
+    leftAloneByStore.set(store, map);
+  }
+  return map;
+}
+
 function pathArg(args: Record<string, unknown>): string | null {
   for (const key of ["path", "file_path"]) {
     const value = args[key];
@@ -68,6 +109,7 @@ export function collectResults(messages: PiMessage[]): {
   const touches: FileTouch[] = [];
   const userMessages: string[] = [];
   const calls = new Map<string, { name: string; args: Record<string, unknown>; turn: number }>();
+  const touchByCall = new Map<string, FileTouch>();
   let currentTurn = 0;
   let latestAssistantText = "";
 
@@ -86,7 +128,16 @@ export function collectResults(messages: PiMessage[]): {
         calls.set(call.id, { name: call.name, args, turn: currentTurn });
         const kind = TOUCH_KIND[call.name];
         const path = pathArg(args);
-        if (kind !== undefined && path !== null) touches.push({ path, messageIndex, kind });
+        if (kind === undefined || path === null) continue;
+        const touch: FileTouch = { path, messageIndex, kind };
+        if (kind === "read") {
+          const offset = lineArg(args.offset);
+          const limit = lineArg(args.limit);
+          if (offset !== undefined) touch.offset = offset;
+          if (limit !== undefined) touch.limit = limit;
+        }
+        touches.push(touch);
+        touchByCall.set(call.id, touch);
       }
       return;
     }
@@ -94,6 +145,8 @@ export function collectResults(messages: PiMessage[]): {
 
     const id = message.toolCallId ?? `unknown_${messageIndex}`;
     const call = calls.get(id);
+    const touch = touchByCall.get(id);
+    if (touch !== undefined) touch.isError = message.isError === true;
     const text = textOf(message.content);
     results.push({
       id,
@@ -117,7 +170,10 @@ export function collectResults(messages: PiMessage[]): {
     task: {
       recent_user_messages: userMessages.slice(-2),
       latest_assistant_text: latestAssistantText,
-      working_files: [...new Set(touches.filter((t) => t.kind !== "read").map((t) => t.path))],
+      // A failed edit or write changed nothing on disk.
+      working_files: [...new Set(
+        touches.filter((t) => t.kind !== "read" && t.isError !== true).map((t) => t.path),
+      )],
     },
   };
 }
@@ -147,7 +203,18 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
     return { ...unchanged, messages: withDecisions(input.messages, input.store) };
   }
 
-  const { results, touches, task, currentTurn } = collectResults(input.messages);
+  const collected = collectResults(input.messages);
+  const { touches, task, currentTurn } = collected;
+
+  const leftAlone = leftAloneFor(input.store);
+  for (const [id, turn] of leftAlone) if (turn !== currentTurn) leftAlone.delete(id);
+  const recentlyLeft = collected.results.filter((result) => leftAlone.has(result.id));
+  // Supersession needs no Jev call, so a left-alone read that a later edit
+  // replaced can still be stubbed.
+  const nowSuperseded = findSuperseded(recentlyLeft, touches);
+  const results = collected.results.filter(
+    (result) => !leftAlone.has(result.id) || nowSuperseded.has(result.id),
+  );
 
   // Relaxed eligibility, because that is what a forced sweep would act on.
   const eligibleCount = selectEligible(results, input.store.get(), input.config, { minTurnsAgo: 1 }).length;
@@ -173,7 +240,7 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
   // earliest changed result to the end, not just tool-result tokens.
   const tokensByIndex = new Map<number, number>();
   input.messages.forEach((message, index) => {
-    tokensByIndex.set(index, estimateTokens(textOf(message.content)));
+    tokensByIndex.set(index, messageTokens(message.content));
   });
   const outcome = await runSweep({
     results,
@@ -200,6 +267,9 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
   });
 
   input.store.add(outcome.decisions);
+  for (const id of Object.keys(outcome.probabilitiesById)) {
+    if (!input.store.get().has(id)) leftAlone.set(id, currentTurn);
+  }
 
   return {
     messages: withDecisions(input.messages, input.store),

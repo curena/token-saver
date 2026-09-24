@@ -82,6 +82,80 @@ describe("findSuperseded", () => {
     expect(found.size).toBe(0);
   });
 
+  describe("partial reads", () => {
+    function rangedRead(id: string, messageIndex: number, range: Record<string, unknown>): ResultRef {
+      return { ...read(id, "a.ts", messageIndex), input: { path: "a.ts", ...range } };
+    }
+
+    it("does not supersede a read with a later read of a different range", () => {
+      const found = findSuperseded([rangedRead("a", 2, { limit: 200 })], [
+        { path: "a.ts", messageIndex: 8, kind: "read", offset: 800, limit: 50 },
+      ]);
+      expect(found.size).toBe(0);
+    });
+
+    it("does not supersede when the later read only partly overlaps", () => {
+      const found = findSuperseded([rangedRead("a", 2, { offset: 100, limit: 100 })], [
+        { path: "a.ts", messageIndex: 8, kind: "read", offset: 150, limit: 100 },
+      ]);
+      expect(found.size).toBe(0);
+    });
+
+    it("supersedes when the later read covers the earlier range", () => {
+      const found = findSuperseded([rangedRead("a", 2, { offset: 100, limit: 50 })], [
+        { path: "a.ts", messageIndex: 8, kind: "read", offset: 50, limit: 200 },
+      ]);
+      expect([...found]).toEqual(["a"]);
+    });
+
+    it("a full-file read covers any earlier partial read", () => {
+      const found = findSuperseded([rangedRead("a", 2, { offset: 800, limit: 50 })], [
+        { path: "a.ts", messageIndex: 8, kind: "read" },
+      ]);
+      expect([...found]).toEqual(["a"]);
+    });
+
+    it("a partial read does not cover an earlier full-file read", () => {
+      const found = findSuperseded([read("a", "a.ts", 2)], [
+        { path: "a.ts", messageIndex: 8, kind: "read", offset: 1, limit: 50 },
+      ]);
+      expect(found.size).toBe(0);
+    });
+
+    it("an open-ended later read covers an earlier range after its offset", () => {
+      const found = findSuperseded([rangedRead("a", 2, { offset: 300, limit: 20 })], [
+        { path: "a.ts", messageIndex: 8, kind: "read", offset: 200 },
+      ]);
+      expect([...found]).toEqual(["a"]);
+    });
+
+    it("a successful edit still supersedes a partial read", () => {
+      const found = findSuperseded([rangedRead("a", 2, { limit: 200 })], [
+        { path: "a.ts", messageIndex: 8, kind: "edit" },
+      ]);
+      expect([...found]).toEqual(["a"]);
+    });
+  });
+
+  describe("failed touches", () => {
+    for (const kind of ["read", "edit", "write"] as const) {
+      it(`a failed ${kind} supersedes nothing`, () => {
+        const found = findSuperseded([read("a", "src/app.ts", 2)], [
+          { path: "src/app.ts", messageIndex: 8, kind, isError: true },
+        ]);
+        expect(found.size).toBe(0);
+      });
+    }
+
+    it("a successful write after a failed edit still supersedes", () => {
+      const found = findSuperseded([read("a", "src/app.ts", 2)], [
+        { path: "src/app.ts", messageIndex: 6, kind: "edit", isError: true },
+        { path: "src/app.ts", messageIndex: 8, kind: "write", isError: false },
+      ]);
+      expect([...found]).toEqual(["a"]);
+    });
+  });
+
   it("never marks non-read results", () => {
     const bash: ResultRef = {
       id: "b", toolName: "bash", input: { command: "cat src/app.ts" }, text: "out",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DecisionStore, SWEEP_ENTRY } from "../src/state.js";
+import { DecisionStore, RESTORE_ENTRY, SWEEP_ENTRY } from "../src/state.js";
 import type { Decision } from "@token-saver/core";
 
 function decision(id: string, level: Decision["level"] = "stub"): Decision {
@@ -61,5 +61,38 @@ describe("DecisionStore", () => {
     expect(store.remove("a")).toBe(true);
     expect(store.remove("a")).toBe(false);
     expect(store.get().size).toBe(0);
+  });
+
+  it("restore pins the result as a leave decision so later sweeps skip it", () => {
+    const store = new DecisionStore();
+    store.add([decision("a")]);
+    expect(store.restore("a")).toBe(true);
+    const pinned = store.get().get("a")!;
+    expect(pinned.level).toBe("leave");
+    expect(pinned.rendered).toBeNull();
+    expect(store.stats()).toEqual({ stubbed: 0, partial: 0, savedTokens: 0 });
+    // A later sweep cannot re-shorten it: the first decision wins.
+    store.add([decision("a")]);
+    expect(store.get().get("a")!.level).toBe("leave");
+  });
+
+  it("restore reports false for unknown or already-restored ids", () => {
+    const store = new DecisionStore();
+    expect(store.restore("nope")).toBe(false);
+    store.add([decision("a")]);
+    expect(store.restore("a")).toBe(true);
+    expect(store.restore("a")).toBe(false);
+  });
+
+  it("rebuild honors restore entries after the sweep that shortened the result", () => {
+    const store = new DecisionStore();
+    store.rebuildFrom([
+      { type: "custom", customType: SWEEP_ENTRY, data: { decisions: [decision("a"), decision("b")] } },
+      { type: "custom", customType: RESTORE_ENTRY, data: { id: "a" } },
+      { type: "custom", customType: RESTORE_ENTRY, data: { id: 42 } },
+    ]);
+    expect(store.get().get("a")!.level).toBe("leave");
+    expect(store.get().get("a")!.rendered).toBeNull();
+    expect(store.get().get("b")!.level).toBe("stub");
   });
 });

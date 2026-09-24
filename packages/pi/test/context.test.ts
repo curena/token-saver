@@ -58,6 +58,67 @@ describe("collectResults", () => {
   });
 });
 
+describe("collectResults touches", () => {
+  it("records read ranges and failed calls on touches", () => {
+    const collected = collectResults([
+      { role: "user", content: "go" },
+      { role: "assistant", content: [
+        { type: "toolCall", id: "r1", name: "read", arguments: { path: "a.ts", offset: 50, limit: 10 } },
+        { type: "toolCall", id: "e1", name: "edit", arguments: { path: "b.ts", oldText: "x", newText: "y" } },
+        { type: "toolCall", id: "w1", name: "write", arguments: { path: "c.ts", content: "z" } },
+      ] },
+      { role: "toolResult", toolCallId: "r1", toolName: "read", content: [{ type: "text", text: "..." }], isError: false },
+      { role: "toolResult", toolCallId: "e1", toolName: "edit", content: [{ type: "text", text: "no match" }], isError: true },
+      { role: "toolResult", toolCallId: "w1", toolName: "write", content: [{ type: "text", text: "ok" }], isError: false },
+    ]);
+    const byPath = Object.fromEntries(collected.touches.map((touch) => [touch.path, touch]));
+    expect(byPath["a.ts"]).toMatchObject({ kind: "read", offset: 50, limit: 10, isError: false });
+    expect(byPath["b.ts"]).toMatchObject({ kind: "edit", isError: true });
+    expect(byPath["c.ts"]).toMatchObject({ kind: "write", isError: false });
+    // A failed edit changed nothing, so b.ts is not a working file.
+    expect(collected.task.working_files).toEqual(["c.ts"]);
+  });
+});
+
+const keepAll: JevClient = {
+  systemOne: async (request) => {
+    const answers: Record<string, { noul: number }> = {};
+    for (const key of Object.keys(request.questions)) answers[key] = { noul: 0.99 };
+    return { answers };
+  },
+};
+
+function withLaterTouch(call: Record<string, unknown>, isError: boolean): PiMessage[] {
+  const messages = conversation();
+  messages.splice(
+    3,
+    0,
+    { role: "assistant", content: [{ type: "toolCall", id: "call_later", ...call }] },
+    { role: "toolResult", toolCallId: "call_later", toolName: call.name as string, content: [{ type: "text", text: "short" }], isError },
+  );
+  return messages;
+}
+
+describe("handleContext supersession", () => {
+  it("does not supersede an earlier read with a partial read of a different range", async () => {
+    const messages = withLaterTouch({ name: "read", arguments: { path: "src/app.ts", offset: 500, limit: 10 } }, false);
+    const out = await handleContext(input({ messages, client: keepAll }));
+    expect(out.sweep!.decisions.filter((d) => d.reason === "superseded")).toEqual([]);
+  });
+
+  it("does not supersede an earlier read with a failed edit", async () => {
+    const messages = withLaterTouch({ name: "edit", arguments: { path: "src/app.ts", oldText: "nope", newText: "x" } }, true);
+    const out = await handleContext(input({ messages, client: keepAll }));
+    expect(out.sweep!.decisions.filter((d) => d.reason === "superseded")).toEqual([]);
+  });
+
+  it("still supersedes an earlier read with a successful edit", async () => {
+    const messages = withLaterTouch({ name: "edit", arguments: { path: "src/app.ts", oldText: "a", newText: "b" } }, false);
+    const out = await handleContext(input({ messages, client: keepAll }));
+    expect(out.sweep!.decisions.map((d) => [d.id, d.reason])).toEqual([["call_1", "superseded"]]);
+  });
+});
+
 describe("handleContext", () => {
   it("does nothing without a Jev client", async () => {
     const out = await handleContext(input({ client: null }));
@@ -154,6 +215,66 @@ describe("handleContext", () => {
       cooldownUntilTurn: 7,
     }));
     expect(second.sweep).toBeNull();
+  });
+
+  it("does not re-judge results Jev left alone within the same user turn", async () => {
+    const messages = conversation();
+    // src/b.ts is read before src/app.ts, so app.ts's suffix is small enough to pass the gate alone.
+    messages.splice(
+      1,
+      0,
+      { role: "assistant", content: [{ type: "toolCall", id: "call_2", name: "read", arguments: { path: "src/b.ts" } }] },
+      { role: "toolResult", toolCallId: "call_2", toolName: "read", content: [{ type: "text", text: bigText }], isError: false },
+    );
+    const judgedPaths: string[] = [];
+    // Keeps everything in src/app.ts ("leave"), drops everything in src/b.ts.
+    const mixed: JevClient = {
+      systemOne: async (request) => {
+        const path = (request.state.result as { input: { path: string } }).input.path;
+        judgedPaths.push(path);
+        const answers: Record<string, { noul: number }> = {};
+        for (const key of Object.keys(request.questions)) answers[key] = { noul: path === "src/app.ts" ? 0.99 : 0.01 };
+        return { answers };
+      },
+    };
+    const store = new DecisionStore();
+    const first = await handleContext(input({ messages, store, client: mixed }));
+    expect(first.sweep!.reason).toBe("swept");
+    expect(first.sweep!.decisions.map((d) => d.id)).toEqual(["call_2"]);
+    expect(judgedPaths).toEqual(["src/b.ts", "src/app.ts"]);
+
+    // A later model call in the same agent run: more tool output, no new user message.
+    const later: PiMessage[] = [
+      ...messages,
+      { role: "assistant", content: [{ type: "toolCall", id: "call_3", name: "bash", arguments: { command: "ls" } }] },
+      { role: "toolResult", toolCallId: "call_3", toolName: "bash", content: [{ type: "text", text: "a b c" }], isError: false },
+    ];
+    judgedPaths.length = 0;
+    const second = await handleContext(input({
+      messages: later, store, client: mixed, cooldownUntilTurn: first.cooldownUntilTurn,
+    }));
+    expect(judgedPaths).toEqual([]);
+    expect(second.sweep?.jevRequests ?? 0).toBe(0);
+
+    // A new user message changes the task, so the result may be judged again.
+    const nextTurn: PiMessage[] = [...later, { role: "user", content: "now something else" }];
+    const third = await handleContext(input({ messages: nextTurn, store, client: mixed, cooldownUntilTurn: 0 }));
+    expect(judgedPaths).toEqual(["src/app.ts"]);
+    expect(third.sweep!.jevRequests).toBe(1);
+  });
+
+  it("counts assistant tool-call arguments in the rewrite cost", async () => {
+    const hugePayload = Array.from({ length: 100 }, () => bigText).join("\n");
+    const messages: PiMessage[] = [
+      ...conversation(),
+      { role: "assistant", content: [{ type: "toolCall", id: "call_9", name: "write", arguments: { path: "src/other.ts", content: hugePayload } }] },
+    ];
+    const out = await handleContext(input({
+      messages,
+      client: { systemOne: async () => { throw new Error("should not be called"); } },
+    }));
+    // Rewriting a suffix that carries a huge write payload costs more than the saving.
+    expect(out.sweep!.reason).toBe("gate");
   });
 
   it("leaves the context untouched when Jev fails", async () => {

@@ -8,7 +8,8 @@ import { handleContext } from "./context.js";
 import type { PiMessage } from "./context.js";
 import { sdkClient } from "./jev.js";
 import { recall, sessionSource } from "./recall.js";
-import { DecisionStore, SWEEP_ENTRY } from "./state.js";
+import { DecisionStore, RESTORE_ENTRY, SWEEP_ENTRY } from "./state.js";
+import type { RestoreEntryData } from "./state.js";
 import { renderSweepEntry } from "./ui.js";
 
 const GUIDELINE =
@@ -99,6 +100,8 @@ export default function extension(pi: any) {
   });
 
   pi.registerEntryRenderer(SWEEP_ENTRY, (entry: { data: SweepEntryData }) => new Text(renderSweepEntry(entry.data)));
+  pi.registerEntryRenderer(RESTORE_ENTRY, (entry: { data: RestoreEntryData }) =>
+    new Text(`token-saver: restored ${entry.data?.id} in full (kept from now on)`));
 
   pi.registerTool({
     name: "recall",
@@ -109,8 +112,8 @@ export default function extension(pi: any) {
       "guessing, or re-running the command, when you need elided detail.",
     parameters: Type.Object({
       id: Type.String({ description: "Tool call id from the [token-saver] marker" }),
-      startLine: Type.Optional(Type.Number({ description: "1-based first line (inclusive)" })),
-      endLine: Type.Optional(Type.Number({ description: "1-based last line (inclusive)" })),
+      startLine: Type.Optional(Type.Number({ description: "First file line (inclusive), as numbered in the elided markers" })),
+      endLine: Type.Optional(Type.Number({ description: "Last file line (inclusive), as numbered in the elided markers" })),
     }),
     async execute(
       _toolCallId: string,
@@ -140,8 +143,13 @@ export default function extension(pi: any) {
       }
       if (argument.startsWith("restore ")) {
         const id = argument.slice("restore ".length).trim();
+        // Pin the result as permanently kept, and persist that so rebuildFrom honors it
+        // on reload: otherwise the sweep entry would bring the stub back, or a later
+        // sweep would re-shorten it (a second cache reset).
+        const restored = store.restore(id);
+        if (restored) pi.appendEntry(RESTORE_ENTRY, { id } satisfies RestoreEntryData);
         ctx.ui.notify(
-          store.remove(id)
+          restored
             ? `token-saver restored ${id} (one cache reset)`
             : `token-saver has no decision for ${id}`,
           "info",

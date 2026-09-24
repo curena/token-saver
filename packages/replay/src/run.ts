@@ -96,7 +96,9 @@ export async function replaySession(
               chunks,
               outcome.probabilitiesById[decision.id] ?? [],
               elided,
-              collectLaterUses(jsonl, result.messageIndex),
+              // Uses before this call saw the result in full; only the call
+              // being made now and later ones worked from the cut version.
+              collectLaterUses(jsonl, site.entryIndex - 1),
             ),
           );
         }
