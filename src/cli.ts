@@ -81,7 +81,7 @@ async function audit(flags: string[]): Promise<number> {
   const items = scanClaudeCode(paths);
   const since = new Date(Date.now() - RECENT_USE_DAYS * 86_400_000);
   const uses = countSkillUses(paths.transcriptDir, since);
-  const profile = buildProfile(root, recentPrompts(paths.transcriptDir, PROMPT_LIMIT));
+  const profile = buildProfile(root, recentPrompts(paths.transcriptDir, PROMPT_LIMIT, since));
 
   const cache = store.loadCache("fit");
   const usage = { total: 0, failed: 0 };

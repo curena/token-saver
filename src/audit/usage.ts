@@ -67,10 +67,25 @@ export function countSkillUses(transcriptDir: string, since: Date): Map<string, 
   return counts;
 }
 
-export function recentPrompts(transcriptDir: string, limit: number): string[] {
+/**
+ * Longest prompt sent to Jev as a "recent request".
+ *
+ * Every other profile input is capped (README 2000, manifests 1500, tree 200) and prompts
+ * need the same bound: real transcripts put pasted file contents, command output and
+ * hook-injected text into `type: "user"` records, so an uncapped prompt ships an entire
+ * blob. That is not only noise -- an oversized request 4xxs, which fails open, which shows
+ * up as "Jev is down" rather than as a request that was too big.
+ */
+const PROMPT_MAX_CHARS = 300;
+
+export function recentPrompts(transcriptDir: string, limit: number, since: Date): string[] {
   const prompts: { at: number; text: string }[] = [];
   for (const record of records(transcriptDir)) {
     if (record.type !== "user") continue;
+    // Same window, and the same treatment of an undateable record, as countSkillUses: a
+    // prompt that cannot be placed in time is not a recent request.
+    const at = record.timestamp ? new Date(record.timestamp) : null;
+    if (!at || Number.isNaN(at.getTime()) || at < since) continue;
     const content = record.message?.content;
     let text: string | null = null;
     if (typeof content === "string") text = content;
@@ -82,8 +97,10 @@ export function recentPrompts(transcriptDir: string, limit: number): string[] {
     }
     if (!text || !text.trim()) continue;
     prompts.push({
-      at: record.timestamp ? Date.parse(record.timestamp) : 0,
-      text: redact(text.trim()),
+      at: at.getTime(),
+      // Redact BEFORE truncating, never after: a secret straddling the cap would otherwise
+      // be cut in half, leaving a fragment no pattern matches.
+      text: redact(text.trim()).slice(0, PROMPT_MAX_CHARS),
     });
   }
   return prompts.sort((a, b) => b.at - a.at).slice(0, limit).map((p) => p.text);
