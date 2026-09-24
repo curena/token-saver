@@ -1,6 +1,8 @@
 # Replay baseline
 
-**Status: run (2026-09-18), but inconclusive for τ — see "What the numbers actually say".**
+**Status: re-run (2026-09-23) after the PR #1 review fixes — token-saver no longer sweeps
+these sessions at all. See "Re-run after review fixes". The 2026-09-18 numbers below are
+kept for history but were inflated by an underestimated rewrite cost.**
 
 ## The first run was contaminated — discarded
 
@@ -58,6 +60,38 @@ etc. — never swept once.
   re-judge net-$ rather than the replay defaults.
 - **Context-window metric.** Compare compaction frequency / `getContextUsage()` tokens with
   `/token-saver on` vs `off` over the same task — the dollar number may never show the win.
+
+## Re-run after review fixes (out/representative-v2, 2026-09-23)
+
+Same six session dirs and taus as the clean re-run, after the PR #1 review fixes (suffix
+now counts assistant `toolCall` arguments, call sites exclude their own output, misses
+count only from the sweep point, reads only supersede covered ranges).
+
+| tau | saved | misses | net $ | jev $ |
+| --- | --- | --- | --- | --- |
+| 0.1 | 0.0% | 0 | 0.0000 | 0.0000 |
+| 0.2 | 0.0% | 0 | 0.0000 | 0.0000 |
+| 0.3 | 0.0% | 0 | 0.0000 | 0.0000 |
+| 0.5 | 0.0% | 0 | 0.0000 | 0.0000 |
+
+Same 6,307,221 tokens before; zero sweeps and zero Jev requests at every tau. The cost
+gate now declines every candidate.
+
+**Cause, isolated by swapping files into the old code** (hoard sessions, the only ones
+that ever swept):
+
+- Old code: 7 call sites passed the cost gate.
+- New code: 0 pass. Best gated value/cost is ~1.11 against the required `costMargin` 1.5
+  (it was ~1.44 among the old gated sites).
+- New staleness rules alone: no change (still 7).
+- New `session.ts` with the `toolCall`-argument counting disabled: back to 7.
+
+So counting tool-call arguments in the suffix is the whole difference. The old sweeps
+passed only because the rewrite cost was underestimated. This matches the old negative
+net-$: at Anthropic cache prices those sweeps never paid for themselves.
+
+This strengthens the conclusion above: the open question is the pricing model (the
+user's real model prices via `ctx.model.cost`) and the context-window metric, not τ.
 
 **Keep-threshold decision: leave `keepThreshold` at the spec default 0.3.** This data
 does not justify a change; the open question is the pricing model, not τ.
