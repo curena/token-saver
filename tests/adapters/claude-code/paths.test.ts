@@ -9,6 +9,18 @@ describe("projectSlug", () => {
   it("handles a nested path", () => {
     expect(projectSlug("/home/u/work/proj")).toBe("-home-u-work-proj");
   });
+
+  it("replaces dots too, matching the slug Claude Code actually writes", () => {
+    // Ground truth observed on a real machine: a worktree path under `.claude/` slugs with
+    // `--claude`, not `-.claude`. Getting this wrong is silent -- countSkillUses and
+    // recentPrompts just find no transcript directory and return empty.
+    expect(projectSlug("/home/archie/workspace/token-saver/.claude/worktrees/milestone-1-plan"))
+      .toBe("-home-archie-workspace-token-saver--claude-worktrees-milestone-1-plan");
+  });
+
+  it("replaces every character that is not alphanumeric or a dash", () => {
+    expect(projectSlug("/home/u/my proj(v2)")).toBe("-home-u-my-proj-v2-");
+  });
 });
 
 describe("claudePaths", () => {
