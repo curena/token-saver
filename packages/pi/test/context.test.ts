@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG } from "@token-saver/core";
+import { DEFAULT_CONFIG, emergencyLevel } from "@token-saver/core";
 import type { JevClient } from "@token-saver/core";
 import { collectResults, handleContext } from "../src/context.js";
 import type { HandleInput, PiMessage } from "../src/context.js";
 import { DecisionStore } from "../src/state.js";
 
 const WINDOW = 100_000;
+const RESERVE_TOKENS = 16_384;
+// 81_616: min(contextLevel 0.85, (100_000 - 16_384 - 2_000) / 100_000) * 100_000.
+const EMERGENCY_BASE = emergencyLevel(WINDOW, RESERVE_TOKENS, DEFAULT_CONFIG.contextLevel) * WINDOW;
 const bigText = Array.from({ length: 400 }, (_, i) => `const value${i} = ${i};`).join("\n");
 
 function conversation(): PiMessage[] {
@@ -37,7 +40,7 @@ function input(over: Partial<HandleInput> = {}): HandleInput {
     config: { ...DEFAULT_CONFIG, minResultTokens: 100 },
     client: stale,
     usage: { tokens: 20_000, window: WINDOW },
-    reserveTokens: 16_384,
+    reserveTokens: RESERVE_TOKENS,
     arming: { turnArmAt: null, emergencyArmAt: null },
     ...over,
   };
@@ -216,13 +219,13 @@ describe("handleContext", () => {
     expect(second.sweep?.jevRequests ?? 0).toBe(0);
 
     // A new user message changes the task, so the result may be judged again.
-    // 84k (not 80k): the prior no-op "context" sweep on `second` re-arms both
-    // trigger points from its own (unreduced) usage, pushing turnArmAt past what
-    // a 100k window can reach; 84k still clears the re-armed emergency point, so
-    // the "may be judged again" behavior is exercised via the "context" trigger.
+    // 82k (not 80k): `second`'s no-op "context" sweep re-arms turnArmAt, but it
+    // is capped at the emergency base (81_616), not left unbounded, so 82k —
+    // above that cap, below the re-armed emergency point — clears the "turn"
+    // trigger directly.
     const nextTurn = atTurnStart(later);
     const third = await handleContext(input({
-      messages: nextTurn, store, client: mixed, usage: { tokens: 84_000, window: WINDOW }, arming: second.arming,
+      messages: nextTurn, store, client: mixed, usage: { tokens: 82_000, window: WINDOW }, arming: second.arming,
     }));
     expect(judgedPaths).toEqual(["src/app.ts"]);
     expect(third.sweep!.jevRequests).toBe(1);
@@ -263,17 +266,53 @@ describe("handleContext triggers", () => {
     expect(out.trigger).toBe("context");
   });
 
-  it("disarms the turn trigger when a sweep falls short of lowWater", async () => {
+  it("disarms the turn trigger when a sweep falls short of lowWater, capped at the emergency base", async () => {
     const out = await handleContext(input({ messages: atTurnStart(), usage: { tokens: 76_000, window: WINDOW } }));
-    // One ~2k-token result can't bring 76k down to 30k.
-    const reached = out.sweep!.reached;
-    expect(out.arming.turnArmAt).toBe(reached + 45_000);
+    // One ~2k-token result can't bring 76k down to 30k, so the naive re-arm
+    // point (reached + 45k) would land well above the emergency base (81_616)
+    // — it's capped there instead, so a stuck turn trigger never re-arms past
+    // where the emergency trigger would fire anyway.
+    expect(out.arming.turnArmAt).toBe(EMERGENCY_BASE);
 
     const again = await handleContext(input({
       messages: atTurnStart(), usage: { tokens: 77_000, window: WINDOW }, arming: out.arming,
     }));
     expect(again.sweep).toBeNull();
     expect(again.idle).toBe("below-level");
+  });
+
+  it("caps the turn re-arm point at the emergency base, so a later turn start can still sweep", async () => {
+    // Mid-run, above the emergency base, with nothing eligible enough to reach
+    // the target: the "context" trigger fires but falls short.
+    const out = await handleContext(input({ usage: { tokens: 85_000, window: WINDOW } }));
+    expect(out.trigger).toBe("context");
+    expect(out.arming.turnArmAt).toBeLessThanOrEqual(EMERGENCY_BASE);
+
+    // A turn start above that (capped) turnArmAt, but below the re-armed
+    // emergencyArmAt, still sweeps via the turn trigger — it isn't stranded
+    // behind an unreachably high re-arm point.
+    const again = await handleContext(input({
+      messages: atTurnStart(), usage: { tokens: 82_000, window: WINDOW }, arming: out.arming,
+    }));
+    expect(again.trigger).toBe("turn");
+  });
+
+  it("resets arming to the base level on a no-usage call", async () => {
+    const out = await handleContext(input({
+      usage: null, arming: { turnArmAt: 90_000, emergencyArmAt: 95_000 },
+    }));
+    expect(out.idle).toBe("no-usage");
+    expect(out.arming).toEqual({ turnArmAt: null, emergencyArmAt: null });
+  });
+
+  it("resets arming once the context has shrunk back to (or below) the target", async () => {
+    // e.g. right after pi compacted: usage is back down near lowWater, so
+    // arm points raised before that no longer apply.
+    const out = await handleContext(input({
+      usage: { tokens: 30_000, window: WINDOW }, // === lowWater * window
+      arming: { turnArmAt: 90_000, emergencyArmAt: 95_000 },
+    }));
+    expect(out.arming).toEqual({ turnArmAt: null, emergencyArmAt: null });
   });
 
   it("does not sweep when usage is unknown", async () => {

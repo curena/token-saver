@@ -178,23 +178,30 @@ function withDecisions(messages: PiMessage[], store: DecisionStore): PiMessage[]
   return changed ? out : null;
 }
 
+const BASE_ARMING: Arming = { turnArmAt: null, emergencyArmAt: null };
+
 export async function handleContext(input: HandleInput): Promise<HandleOutput> {
-  const idle = (reason: NonNullable<HandleOutput["idle"]>): HandleOutput => ({
+  const idle = (reason: NonNullable<HandleOutput["idle"]>, arming: Arming = input.arming): HandleOutput => ({
     messages: withDecisions(input.messages, input.store),
-    sweep: null, trigger: null, arming: input.arming, idle: reason,
+    sweep: null, trigger: null, arming, idle: reason,
   });
   // Decisions are immutable: "/token-saver off" stops sweeps but existing
   // stubs stay applied (spec §7); only the sweep is gated on `enabled`.
   if (!input.config.enabled || input.client === null) return idle("disabled");
-  if (input.usage === null) return idle("no-usage");
+  // pi reports null usage right after compaction; treat that as a clean slate
+  // rather than carrying stale arm points into the next real reading.
+  if (input.usage === null) return idle("no-usage", BASE_ARMING);
 
   const { tokens, window } = input.usage;
   const { config, reserveTokens } = input;
   const turnBase = turnLevel(window, reserveTokens, config) * window;
   const emergencyBase = emergencyLevel(window, reserveTokens, config.contextLevel) * window;
   const compactionPoint = window - reserveTokens;
-  const turnArmAt = input.arming.turnArmAt ?? turnBase;
-  const emergencyArmAt = input.arming.emergencyArmAt ?? emergencyBase;
+  // The context has shrunk back to (or below) the sweep target — most likely
+  // pi just compacted — so arm points raised before that no longer apply.
+  const arming = tokens <= config.lowWater * window ? BASE_ARMING : input.arming;
+  const turnArmAt = arming.turnArmAt ?? turnBase;
+  const emergencyArmAt = arming.emergencyArmAt ?? emergencyBase;
 
   // The first context of a turn ends with the user's message; mid-run ones end
   // with a tool result. Sweeping only there puts the re-processing wait where
@@ -202,7 +209,7 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
   const atTurnStart = input.messages.at(-1)?.role === "user";
   const trigger: "turn" | "context" | null =
     tokens >= emergencyArmAt ? "context" : atTurnStart && tokens >= turnArmAt ? "turn" : null;
-  if (trigger === null) return idle(atTurnStart ? "below-level" : "mid-run");
+  if (trigger === null) return idle(atTurnStart ? "below-level" : "mid-run", arming);
 
   const collected = collectResults(input.messages);
   const { touches, task, currentTurn } = collected;
@@ -246,7 +253,10 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
     sweep: outcome,
     trigger: outcome.decisions.length > 0 ? trigger : null,
     arming: {
-      turnArmAt: nextArmAt(outcome.reached, window, config, turnBase, Infinity),
+      // Capped at the emergency base, not Infinity: a turn trigger that falls
+      // short must not be able to re-arm past the point the emergency trigger
+      // would fire anyway.
+      turnArmAt: nextArmAt(outcome.reached, window, config, turnBase, emergencyBase),
       emergencyArmAt: nextArmAt(outcome.reached, window, config, emergencyBase, compactionPoint),
     },
     idle: null,
