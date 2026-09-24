@@ -250,6 +250,18 @@ describe("cli", () => {
     expect(err.join("\n")).toContain(settings);
   });
 
+  it("gives the SDK a shorter per-attempt timeout than our own audit deadline", async () => {
+    // TypeSafeClientConfig.timeout defaults to 10000ms per attempt -- identical to
+    // AUDIT_DEADLINE_MS. Two independent 10s timers racing means an audit timeout surfaces
+    // nondeterministically as either an SDK APITimeoutError or our own deadline abort.
+    judgeEverythingIrrelevant();
+    addSkill("pdf", "Read, edit and create PDF files");
+    await main(["audit"]);
+
+    expect(clientConfigs).toHaveLength(1);
+    expect(clientConfigs[0]).toMatchObject({ retry: { maxRetries: 0 }, timeout: 9_000 });
+  });
+
   it("warns on stderr and still exits 0 when every fit judgment fails", async () => {
     process.env.TYPESAFE_API_KEY = "test-key";
     mockSystemOne.mockRejectedValue(new Error("simulated Jev failure"));

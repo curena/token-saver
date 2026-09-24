@@ -1,6 +1,8 @@
-import { existsSync } from "node:fs";
+#!/usr/bin/env node
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { claudePaths } from "./adapters/claude-code/paths.js";
 import { fingerprint } from "./audit/fingerprint.js";
 import { scanClaudeCode } from "./audit/inventory-claude-code.js";
@@ -20,6 +22,16 @@ import { Store } from "./runtime/store.js";
 
 const PROMPT_LIMIT = 200;
 const AUDIT_DEADLINE_MS = 10_000;
+
+/**
+ * Per-attempt SDK timeout, deliberately shorter than AUDIT_DEADLINE_MS.
+ *
+ * TypeSafeClientConfig.timeout defaults to 10000ms -- exactly our deadline. Two independent
+ * 10s timers racing means an audit timeout surfaces nondeterministically as either the SDK's
+ * APITimeoutError or our own deadline abort. Keeping the SDK's strictly inside ours makes our
+ * deadline the unambiguous outer bound.
+ */
+const SDK_TIMEOUT_MS = 9_000;
 
 const USAGE = `usage:
   token-saver audit [--apply] [--undo]   inventory skills, judge fit, propose settings
@@ -49,7 +61,7 @@ async function makeJev(cache: Map<string, any>, usage: { total: number; failed: 
     return new Jev({ client: null, cache, deadlineMs: AUDIT_DEADLINE_MS, onUsage });
   }
   const { TypeSafeClient } = await import("@typesafe-ai/sdk");
-  const client = new TypeSafeClient({ retry: { maxRetries: 0 } });
+  const client = new TypeSafeClient({ retry: { maxRetries: 0 }, timeout: SDK_TIMEOUT_MS });
   return new Jev({ client: client as any, cache, deadlineMs: AUDIT_DEADLINE_MS, onUsage });
 }
 
@@ -158,7 +170,41 @@ export async function main(argv: string[]): Promise<number> {
   return 1;
 }
 
-// Entry point when run as a binary, not when imported by tests.
-if (process.argv[1]?.endsWith("cli.js")) {
-  main(process.argv.slice(2)).then((code) => process.exit(code));
+/**
+ * True when this module is the program Node was asked to run, rather than an import.
+ *
+ * Compared by URL, not by filename: `npm link` puts a symlink on PATH, so `process.argv[1]`
+ * is `<prefix>/bin/token-saver` and an `endsWith("cli.js")` check is false -- the published
+ * binary would run, do nothing at all, and exit 0.
+ *
+ * `realpathSync` is required, not belt-and-braces: Node resolves symlinks when it loads the
+ * module, so `import.meta.url` is the real path of dist/cli.js, while `process.argv[1]` keeps
+ * whatever path the user typed. Comparing those two directly is false for exactly the
+ * npm-symlink case this guard exists to fix. Verified by running through such a symlink.
+ */
+function isEntryPoint(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
+  // `process.exitCode` rather than `process.exit(code)`: console.log to a pipe is async on
+  // Linux, and process.exit discards whatever is still buffered -- which for the
+  // SessionStart hook is the JSON payload itself. Setting the code and letting Node exit
+  // naturally flushes first.
+  main(process.argv.slice(2))
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((err: unknown) => {
+      // Without this, a throw surfaces as a raw unhandled-rejection stack trace -- in the
+      // SessionStart hook, that lands at the top of the user's session.
+      console.error(`token-saver: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    });
 }

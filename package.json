@@ -5,7 +5,8 @@
   "engines": { "node": ">=20" },
   "bin": { "token-saver": "./dist/cli.js" },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run build:chmod",
+    "build:chmod": "node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "test": "vitest run",
     "dev": "tsx src/cli.ts"
   },
