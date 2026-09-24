@@ -9,7 +9,9 @@ export const DEFAULT_CONFIG: Config = {
   leaveAloneRatio: 0.7,
   minSaving: 500,
   costMargin: 1.5,
-  contextLevel: 0.6,
+  contextLevel: 0.85,
+  highWater: 0.75,
+  lowWater: 0.3,
   expectedSaveRatio: 0.5,
   jevBudgetMs: 1500,
   jevModel: "jev-1.13.0",
@@ -18,7 +20,8 @@ export const DEFAULT_CONFIG: Config = {
 
 const NUMERIC_KEYS = [
   "minResultTokens", "protectTurns", "keepThreshold", "leaveAloneRatio",
-  "minSaving", "costMargin", "contextLevel", "expectedSaveRatio", "jevBudgetMs",
+  "minSaving", "costMargin", "contextLevel", "highWater", "lowWater",
+  "expectedSaveRatio", "jevBudgetMs",
 ] as const;
 
 function envName(key: string): string {
@@ -63,6 +66,17 @@ export function loadConfig(
     config.excludedTools = tools.split(",").map((t) => t.trim()).filter(Boolean);
   }
   if (env.TOKEN_SAVER === "off") config.enabled = false;
+
+  const { lowWater, highWater, contextLevel } = config;
+  if (!(0 < lowWater && lowWater < highWater && highWater < 1 && highWater <= contextLevel)) {
+    console.warn(
+      `token-saver: invalid levels (lowWater ${lowWater}, highWater ${highWater}, ` +
+      `contextLevel ${contextLevel}); using defaults`,
+    );
+    config.lowWater = DEFAULT_CONFIG.lowWater;
+    config.highWater = DEFAULT_CONFIG.highWater;
+    config.contextLevel = DEFAULT_CONFIG.contextLevel;
+  }
 
   return config;
 }

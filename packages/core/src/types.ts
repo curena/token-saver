@@ -58,6 +58,10 @@ export interface Config {
   minSaving: number;
   costMargin: number;
   contextLevel: number;
+  /** Turn-trigger level, as a fraction of the context window. */
+  highWater: number;
+  /** Sweep target, as a fraction of the context window. */
+  lowWater: number;
   expectedSaveRatio: number;
   jevBudgetMs: number;
   jevModel: string;

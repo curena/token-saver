@@ -89,4 +89,33 @@ describe("loadConfig", () => {
     config.excludedTools.push("apply_patch");
     expect(DEFAULT_CONFIG.excludedTools).toEqual(["edit", "write"]);
   });
+
+  it("defaults the water levels", () => {
+    const config = loadConfig({ env: {} });
+    expect(config.highWater).toBe(0.75);
+    expect(config.lowWater).toBe(0.3);
+    expect(config.contextLevel).toBe(0.85);
+  });
+
+  it("reads water levels from files and env", () => {
+    const config = loadConfig({
+      files: [fileWith({ highWater: 0.6, lowWater: 0.2 })],
+      env: { TOKEN_SAVER_LOW_WATER: "0.25" },
+    });
+    expect(config.highWater).toBe(0.6);
+    expect(config.lowWater).toBe(0.25);
+  });
+
+  it("falls back to default levels when lowWater is not below highWater", () => {
+    const config = loadConfig({ files: [fileWith({ highWater: 0.3, lowWater: 0.5 })], env: {} });
+    expect(config.highWater).toBe(0.75);
+    expect(config.lowWater).toBe(0.3);
+    expect(config.contextLevel).toBe(0.85);
+  });
+
+  it("falls back to default levels when highWater exceeds contextLevel", () => {
+    const config = loadConfig({ files: [fileWith({ highWater: 0.9, contextLevel: 0.8 })], env: {} });
+    expect(config.highWater).toBe(0.75);
+    expect(config.contextLevel).toBe(0.85);
+  });
 });
