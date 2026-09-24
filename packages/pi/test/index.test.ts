@@ -24,7 +24,7 @@ function harness() {
   const ctx = {
     sessionManager: { buildContextEntries: () => entries, getEntries: () => entries },
     ui: { notify: vi.fn() },
-    getContextUsage: () => undefined,
+    getContextUsage: () => ({ tokens: 80_000, contextWindow: 100_000, percent: 80 }),
   };
   const messages = [
     { role: "user", content: "go" },

@@ -5,7 +5,7 @@ import { collectResults, handleContext } from "../src/context.js";
 import type { HandleInput, PiMessage } from "../src/context.js";
 import { DecisionStore } from "../src/state.js";
 
-const PRICES = { input: 3 / 1e6, cacheRead: 0.3 / 1e6, cacheWrite: 3.75 / 1e6 };
+const WINDOW = 100_000;
 const bigText = Array.from({ length: 400 }, (_, i) => `const value${i} = ${i};`).join("\n");
 
 function conversation(): PiMessage[] {
@@ -36,14 +36,16 @@ function input(over: Partial<HandleInput> = {}): HandleInput {
     store: new DecisionStore(),
     config: { ...DEFAULT_CONFIG, minResultTokens: 100 },
     client: stale,
-    prices: PRICES,
-    contextFraction: 0.2,
-    callsSoFar: 20,
-    lastForcedFraction: null,
-    lastForcedEligible: null,
-    cooldownUntilTurn: 0,
+    usage: { tokens: 20_000, window: WINDOW },
+    reserveTokens: 16_384,
+    arming: { turnArmAt: null, emergencyArmAt: null },
     ...over,
   };
+}
+
+/** The first context of a user turn ends with the user's message. */
+function atTurnStart(messages: PiMessage[] = conversation()): PiMessage[] {
+  return [...messages, { role: "user", content: "next step" }];
 }
 
 describe("collectResults", () => {
@@ -101,20 +103,20 @@ function withLaterTouch(call: Record<string, unknown>, isError: boolean): PiMess
 
 describe("handleContext supersession", () => {
   it("does not supersede an earlier read with a partial read of a different range", async () => {
-    const messages = withLaterTouch({ name: "read", arguments: { path: "src/app.ts", offset: 500, limit: 10 } }, false);
-    const out = await handleContext(input({ messages, client: keepAll }));
+    const messages = atTurnStart(withLaterTouch({ name: "read", arguments: { path: "src/app.ts", offset: 500, limit: 10 } }, false));
+    const out = await handleContext(input({ messages, client: keepAll, usage: { tokens: 80_000, window: WINDOW } }));
     expect(out.sweep!.decisions.filter((d) => d.reason === "superseded")).toEqual([]);
   });
 
   it("does not supersede an earlier read with a failed edit", async () => {
-    const messages = withLaterTouch({ name: "edit", arguments: { path: "src/app.ts", oldText: "nope", newText: "x" } }, true);
-    const out = await handleContext(input({ messages, client: keepAll }));
+    const messages = atTurnStart(withLaterTouch({ name: "edit", arguments: { path: "src/app.ts", oldText: "nope", newText: "x" } }, true));
+    const out = await handleContext(input({ messages, client: keepAll, usage: { tokens: 80_000, window: WINDOW } }));
     expect(out.sweep!.decisions.filter((d) => d.reason === "superseded")).toEqual([]);
   });
 
   it("still supersedes an earlier read with a successful edit", async () => {
-    const messages = withLaterTouch({ name: "edit", arguments: { path: "src/app.ts", oldText: "a", newText: "b" } }, false);
-    const out = await handleContext(input({ messages, client: keepAll }));
+    const messages = atTurnStart(withLaterTouch({ name: "edit", arguments: { path: "src/app.ts", oldText: "a", newText: "b" } }, false));
+    const out = await handleContext(input({ messages, client: keepAll, usage: { tokens: 80_000, window: WINDOW } }));
     expect(out.sweep!.decisions.map((d) => [d.id, d.reason])).toEqual([["call_1", "superseded"]]);
   });
 });
@@ -133,10 +135,12 @@ describe("handleContext", () => {
 
   it("keeps existing stubs applied when disabled", async () => {
     const store = new DecisionStore();
-    const first = await handleContext(input({ store }));
+    const messages = atTurnStart();
+    const usage = { tokens: 80_000, window: WINDOW };
+    const first = await handleContext(input({ store, messages, usage }));
     store.add(first.sweep!.decisions);
     const out = await handleContext(input({
-      store,
+      store, messages, usage,
       config: { ...DEFAULT_CONFIG, minResultTokens: 100, enabled: false },
     }));
     expect(out.sweep).toBeNull();
@@ -146,8 +150,8 @@ describe("handleContext", () => {
   });
 
   it("sweeps and replaces the stale result's text", async () => {
-    const out = await handleContext(input());
-    expect(out.trigger).toBe("cost");
+    const out = await handleContext(input({ messages: atTurnStart(), usage: { tokens: 80_000, window: WINDOW } }));
+    expect(out.trigger).toBe("turn");
     expect(out.sweep!.decisions).toHaveLength(1);
     const replaced = out.messages!.find((message) => message.toolCallId === "call_1")!;
     expect(JSON.stringify(replaced.content)).toContain("[token-saver]");
@@ -155,71 +159,21 @@ describe("handleContext", () => {
 
   it("applies stored decisions without sweeping again", async () => {
     const store = new DecisionStore();
-    const first = await handleContext(input({ store }));
+    const messages = atTurnStart();
+    const usage = { tokens: 80_000, window: WINDOW };
+    const first = await handleContext(input({ store, messages, usage }));
     store.add(first.sweep!.decisions);
-    const second = await handleContext(input({ store, client: { systemOne: async () => { throw new Error("should not be called"); } } }));
+    const second = await handleContext(input({
+      store, messages, usage,
+      client: { systemOne: async () => { throw new Error("should not be called"); } },
+    }));
     expect(second.sweep!.reason).toBe("no-candidates");
     expect(second.trigger).toBeNull();
     expect(JSON.stringify(second.messages)).toContain("[token-saver]");
   });
 
-  it("forces a sweep when context usage crosses the level", async () => {
-    const out = await handleContext(input({
-      contextFraction: 0.7,
-      // a cost gate this strict would refuse on its own
-      config: { ...DEFAULT_CONFIG, minResultTokens: 100, costMargin: 1000 },
-    }));
-    expect(out.trigger).toBe("context");
-    expect(out.lastForcedFraction).toBe(0.7);
-    expect(out.lastForcedEligible).toBe(1);
-  });
-
-  it("does not force again until usage grows by ten points", async () => {
-    const out = await handleContext(input({
-      contextFraction: 0.65, lastForcedFraction: 0.6, lastForcedEligible: 1,
-      config: { ...DEFAULT_CONFIG, minResultTokens: 100, costMargin: 1000 },
-    }));
-    expect(out.trigger).toBeNull();
-  });
-
-  it("forces again when new results become eligible", async () => {
-    const messages = conversation();
-    messages.splice(
-      3,
-      0,
-      { role: "assistant", content: [{ type: "toolCall", id: "call_2", name: "read", arguments: { path: "src/b.ts" } }] },
-      { role: "toolResult", toolCallId: "call_2", toolName: "read", content: [{ type: "text", text: bigText }], isError: false },
-    );
-    const out = await handleContext(input({
-      messages, contextFraction: 0.65, lastForcedFraction: 0.6, lastForcedEligible: 1,
-      config: { ...DEFAULT_CONFIG, minResultTokens: 100, costMargin: 1000 },
-    }));
-    expect(out.trigger).toBe("context");
-    expect(out.lastForcedEligible).toBe(2);
-  });
-
-  it("respects the cooldown after a refused post-gate", async () => {
-    const keepAll: JevClient = {
-      systemOne: async (request) => {
-        const answers: Record<string, { noul: number }> = {};
-        for (const key of Object.keys(request.questions)) answers[key] = { noul: 0.99 };
-        return { answers };
-      },
-    };
-    const first = await handleContext(input({ client: keepAll }));
-    expect(first.sweep!.reason).toBe("post-gate");
-    expect(first.cooldownUntilTurn).toBe(7);
-
-    const second = await handleContext(input({
-      client: { systemOne: async () => { throw new Error("should not be called"); } },
-      cooldownUntilTurn: 7,
-    }));
-    expect(second.sweep).toBeNull();
-  });
-
   it("does not re-judge results Jev left alone within the same user turn", async () => {
     const messages = conversation();
-    // src/b.ts is read before src/app.ts, so app.ts's suffix is small enough to pass the gate alone.
     messages.splice(
       1,
       0,
@@ -238,51 +192,93 @@ describe("handleContext", () => {
       },
     };
     const store = new DecisionStore();
-    const first = await handleContext(input({ messages, store, client: mixed }));
+    const turnStart = atTurnStart(messages);
+    const first = await handleContext(input({
+      messages: turnStart, store, client: mixed, usage: { tokens: 80_000, window: WINDOW },
+    }));
     expect(first.sweep!.reason).toBe("swept");
     expect(first.sweep!.decisions.map((d) => d.id)).toEqual(["call_2"]);
     expect(judgedPaths).toEqual(["src/b.ts", "src/app.ts"]);
 
     // A later model call in the same agent run: more tool output, no new user message.
     const later: PiMessage[] = [
-      ...messages,
+      ...turnStart,
       { role: "assistant", content: [{ type: "toolCall", id: "call_3", name: "bash", arguments: { command: "ls" } }] },
       { role: "toolResult", toolCallId: "call_3", toolName: "bash", content: [{ type: "text", text: "a b c" }], isError: false },
     ];
     judgedPaths.length = 0;
+    // Above the 81.6% emergency level (window 100k, reserveTokens 16_384): mid-run
+    // sweeps fire on the "context" trigger, not "turn".
     const second = await handleContext(input({
-      messages: later, store, client: mixed, cooldownUntilTurn: first.cooldownUntilTurn,
+      messages: later, store, client: mixed, usage: { tokens: 85_000, window: WINDOW }, arming: first.arming,
     }));
     expect(judgedPaths).toEqual([]);
     expect(second.sweep?.jevRequests ?? 0).toBe(0);
 
     // A new user message changes the task, so the result may be judged again.
-    const nextTurn: PiMessage[] = [...later, { role: "user", content: "now something else" }];
-    const third = await handleContext(input({ messages: nextTurn, store, client: mixed, cooldownUntilTurn: 0 }));
+    // 84k (not 80k): the prior no-op "context" sweep on `second` re-arms both
+    // trigger points from its own (unreduced) usage, pushing turnArmAt past what
+    // a 100k window can reach; 84k still clears the re-armed emergency point, so
+    // the "may be judged again" behavior is exercised via the "context" trigger.
+    const nextTurn = atTurnStart(later);
+    const third = await handleContext(input({
+      messages: nextTurn, store, client: mixed, usage: { tokens: 84_000, window: WINDOW }, arming: second.arming,
+    }));
     expect(judgedPaths).toEqual(["src/app.ts"]);
     expect(third.sweep!.jevRequests).toBe(1);
   });
 
-  it("counts assistant tool-call arguments in the rewrite cost", async () => {
-    const hugePayload = Array.from({ length: 100 }, () => bigText).join("\n");
-    const messages: PiMessage[] = [
-      ...conversation(),
-      { role: "assistant", content: [{ type: "toolCall", id: "call_9", name: "write", arguments: { path: "src/other.ts", content: hugePayload } }] },
-    ];
-    const out = await handleContext(input({
-      messages,
-      client: { systemOne: async () => { throw new Error("should not be called"); } },
-    }));
-    // Rewriting a suffix that carries a huge write payload costs more than the saving.
-    expect(out.sweep!.reason).toBe("gate");
-  });
-
   it("leaves the context untouched when Jev fails", async () => {
     const out = await handleContext(input({
+      messages: atTurnStart(), usage: { tokens: 80_000, window: WINDOW },
       client: { systemOne: async () => { throw new Error("boom"); } },
     }));
     expect(out.messages).toBeNull();
     expect(out.sweep!.reason).toBe("judge-failed");
-    expect(out.cooldownUntilTurn).toBe(0);   // fail-open: retry at the next trigger
+    expect(out.arming.turnArmAt).toBeGreaterThan(75_000); // fail-open: retry at the next trigger
+  });
+});
+
+describe("handleContext triggers", () => {
+  it("does not sweep mid-run below the emergency level", async () => {
+    const out = await handleContext(input({ usage: { tokens: 80_000, window: WINDOW } }));
+    expect(out.sweep).toBeNull();
+    expect(out.idle).toBe("mid-run");
+  });
+
+  it("does not sweep at a turn start below highWater", async () => {
+    const out = await handleContext(input({ messages: atTurnStart(), usage: { tokens: 70_000, window: WINDOW } }));
+    expect(out.sweep).toBeNull();
+    expect(out.idle).toBe("below-level");
+  });
+
+  it("sweeps at a turn start at or above highWater, aiming for lowWater", async () => {
+    const out = await handleContext(input({ messages: atTurnStart(), usage: { tokens: 76_000, window: WINDOW } }));
+    expect(out.trigger).toBe("turn");
+    expect(out.sweep?.decisions.length).toBe(1);
+  });
+
+  it("sweeps mid-run above the emergency level", async () => {
+    const out = await handleContext(input({ usage: { tokens: 82_000, window: WINDOW } }));
+    expect(out.trigger).toBe("context");
+  });
+
+  it("disarms the turn trigger when a sweep falls short of lowWater", async () => {
+    const out = await handleContext(input({ messages: atTurnStart(), usage: { tokens: 76_000, window: WINDOW } }));
+    // One ~2k-token result can't bring 76k down to 30k.
+    const reached = out.sweep!.reached;
+    expect(out.arming.turnArmAt).toBe(reached + 45_000);
+
+    const again = await handleContext(input({
+      messages: atTurnStart(), usage: { tokens: 77_000, window: WINDOW }, arming: out.arming,
+    }));
+    expect(again.sweep).toBeNull();
+    expect(again.idle).toBe("below-level");
+  });
+
+  it("does not sweep when usage is unknown", async () => {
+    const out = await handleContext(input({ messages: atTurnStart(), usage: null }));
+    expect(out.sweep).toBeNull();
+    expect(out.idle).toBe("no-usage");
   });
 });

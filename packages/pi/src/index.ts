@@ -1,11 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "@token-saver/core";
-import type { Config, Prices, SweepEntryData } from "@token-saver/core";
+import { emergencyLevel, loadConfig, turnLevel } from "@token-saver/core";
+import type { Config, SweepEntryData } from "@token-saver/core";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { handleContext } from "./context.js";
-import type { PiMessage } from "./context.js";
+import type { Arming, HandleOutput, PiMessage } from "./context.js";
+import { readReserveTokens } from "./settings.js";
 import { sdkClient } from "./jev.js";
 import { recall, sessionSource } from "./recall.js";
 import { DecisionStore, RESTORE_ENTRY, SWEEP_ENTRY } from "./state.js";
@@ -23,27 +24,21 @@ export default function extension(pi: any) {
     files: [join(homedir(), ".pi", "token-saver.json"), join(process.cwd(), ".pi", "token-saver.json")],
   });
   const client = sdkClient(process.env.TYPESAFE_API_KEY);
-  let callsSoFar = 0;
-  let cooldownUntilTurn = 0;
-  let lastForcedFraction: number | null = null;
-  let lastForcedEligible: number | null = null;
+  const reserveTokens = readReserveTokens([
+    join(homedir(), ".pi", "agent", "settings.json"),
+    join(process.cwd(), ".pi", "settings.json"),
+  ]);
+  let arming: Arming = { turnArmAt: null, emergencyArmAt: null };
+  let lastIdle: HandleOutput["idle"] = null;
+  let lastUsage: { tokens: number; window: number } | null = null;
   let jevTokens = 0;
   let recalls = 0;
 
   const JEV_PRICE_PER_TOKEN = 0.042 / 1e6;
 
-  // Both price shapes are handled: per-token values are < 0.001, per-Mtok values are
-  // >= 0.001 (divide the latter by 1e6). The live unit probe (Step 1) was not run here,
-  // so confirm ctx.model.cost in a real session before trusting the cost gate.
-  const priceOf = (ctx: any): Prices | null => {
-    const cost = ctx.model?.cost;
-    if (cost === undefined || typeof cost.cacheWrite !== "number" || cost.cacheWrite === 0) return null;
-    const scale = cost.input > 0.001 ? 1e6 : 1;
-    return { input: cost.input / scale, cacheRead: cost.cacheRead / scale, cacheWrite: cost.cacheWrite / scale };
-  };
-
   pi.on("session_start", async (_event: unknown, ctx: any) => {
     store.rebuildFrom(ctx.sessionManager.buildContextEntries());
+    arming = { turnArmAt: null, emergencyArmAt: null };
     if (client === null) {
       ctx.ui?.notify?.("token-saver: TYPESAFE_API_KEY is not set, staying inert", "warn");
     }
@@ -62,36 +57,32 @@ export default function extension(pi: any) {
   });
 
   pi.on("context", async (event: any, ctx: any) => {
-    callsSoFar++;
-    const usage = ctx.getContextUsage?.();
-    const fraction =
-      usage && typeof usage.tokens === "number" && typeof usage.contextWindow === "number" && usage.contextWindow > 0
-        ? usage.tokens / usage.contextWindow
+    const raw = ctx.getContextUsage?.();
+    const usage =
+      raw && typeof raw.tokens === "number" && typeof raw.contextWindow === "number" && raw.contextWindow > 0
+        ? { tokens: raw.tokens, window: raw.contextWindow }
         : null;
+    lastUsage = usage;
 
     const outcome = await handleContext({
       messages: event.messages as PiMessage[],
       store,
       config,
       client,
-      prices: priceOf(ctx),
-      contextFraction: fraction,
-      callsSoFar,
-      lastForcedFraction,
-      lastForcedEligible,
-      cooldownUntilTurn,
+      usage,
+      reserveTokens,
+      arming,
       signal: ctx.signal,
     });
 
-    cooldownUntilTurn = outcome.cooldownUntilTurn;
-    lastForcedFraction = outcome.lastForcedFraction;
-    lastForcedEligible = outcome.lastForcedEligible;
+    arming = outcome.arming;
+    lastIdle = outcome.idle;
     if (outcome.sweep !== null) jevTokens += outcome.sweep.jevInputTokens;
 
-    if (outcome.sweep !== null && outcome.sweep.decisions.length > 0) {
+    if (outcome.sweep !== null && outcome.sweep.decisions.length > 0 && outcome.trigger !== null) {
       const data: SweepEntryData = {
         decisions: outcome.sweep.decisions,
-        trigger: outcome.trigger ?? "cost",
+        trigger: outcome.trigger,
         at: new Date().toISOString(),
       };
       pi.appendEntry(SWEEP_ENTRY, data);
@@ -157,10 +148,21 @@ export default function extension(pi: any) {
         return;
       }
       const stats = store.stats();
+      const k = (n: number) => `${(n / 1000).toFixed(1)}k`;
+      let levels = "context size unknown (no sweeps)";
+      if (lastUsage !== null) {
+        const { tokens, window } = lastUsage;
+        const turnAt = arming.turnArmAt ?? turnLevel(window, reserveTokens, config) * window;
+        const emergencyAt = arming.emergencyArmAt ?? emergencyLevel(window, reserveTokens, config.contextLevel) * window;
+        levels =
+          `context ${k(tokens)}/${k(window)} (${((tokens / window) * 100).toFixed(0)}%), ` +
+          `next sweep at ${k(turnAt)} on your message, emergency ${k(emergencyAt)}, target ${k(config.lowWater * window)}`;
+      }
       ctx.ui.notify(
-        `token-saver: ${stats.stubbed} stubbed, ${stats.partial} partial, ` +
-        `~${(stats.savedTokens / 1000).toFixed(1)}k tokens freed, ${recalls} recalls, ` +
-        `jev spend ~$${(jevTokens * JEV_PRICE_PER_TOKEN).toFixed(4)}`,
+        `token-saver: ${levels}. ${stats.stubbed} stubbed, ${stats.partial} partial, ` +
+        `~${k(stats.savedTokens)} tokens freed, ${recalls} recalls, ` +
+        `jev spend ~$${(jevTokens * JEV_PRICE_PER_TOKEN).toFixed(4)}` +
+        (lastIdle === "disabled" ? " (off)" : ""),
         "info",
       );
     },

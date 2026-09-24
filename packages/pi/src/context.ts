@@ -1,7 +1,5 @@
-import { estimateTokens, findSuperseded, runSweep, selectEligible } from "@token-saver/core";
-import type {
-  Config, FileTouch, JevClient, Prices, ResultRef, SweepOutcome, TaskState,
-} from "@token-saver/core";
+import { emergencyLevel, estimateTokens, findSuperseded, nextArmAt, runSweep, turnLevel } from "@token-saver/core";
+import type { Config, FileTouch, JevClient, ResultRef, SweepOutcome, TaskState } from "@token-saver/core";
 import type { DecisionStore } from "./state.js";
 
 export interface PiMessage {
@@ -12,32 +10,38 @@ export interface PiMessage {
   isError?: boolean;
 }
 
+export interface Usage {
+  tokens: number;
+  window: number;
+}
+
+/** Arm points for the next sweep; null means "use the config-derived base level". */
+export interface Arming {
+  turnArmAt: number | null;
+  emergencyArmAt: number | null;
+}
+
 export interface HandleInput {
   messages: PiMessage[];
   store: DecisionStore;
   config: Config;
   client: JevClient | null;
-  prices: Prices | null;
-  contextFraction: number | null;
-  callsSoFar: number;
-  lastForcedFraction: number | null;
-  lastForcedEligible: number | null;
-  cooldownUntilTurn: number;
+  usage: Usage | null;
+  reserveTokens: number;
+  arming: Arming;
   signal?: AbortSignal;
 }
 
 export interface HandleOutput {
   messages: PiMessage[] | null;
   sweep: SweepOutcome | null;
-  trigger: "cost" | "context" | null;
-  cooldownUntilTurn: number;
-  lastForcedFraction: number | null;
-  lastForcedEligible: number | null;
+  trigger: "turn" | "context" | null;
+  arming: Arming;
+  /** Why no sweep ran, for /token-saver status. null when a sweep ran. */
+  idle: "disabled" | "no-usage" | "below-level" | "mid-run" | null;
 }
 
 const TOUCH_KIND: Record<string, FileTouch["kind"]> = { read: "read", edit: "edit", write: "write" };
-const FORCE_STEP = 0.1;
-const COOLDOWN_TURNS = 3;
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -49,22 +53,6 @@ function textOf(content: unknown): string {
     .join("\n");
 }
 
-/**
- * Tokens a message contributes to a rewritten suffix: its text plus any
- * assistant tool-call arguments (write payloads, edit strings), which the
- * provider re-sends just like text.
- */
-function messageTokens(content: unknown): number {
-  let tokens = estimateTokens(textOf(content));
-  if (!Array.isArray(content)) return tokens;
-  for (const block of content) {
-    const call = block as { type?: string; name?: string; arguments?: unknown };
-    if (call.type !== "toolCall") continue;
-    tokens += estimateTokens(`${call.name ?? ""}${JSON.stringify(call.arguments ?? {})}`);
-  }
-  return tokens;
-}
-
 function lineArg(value: unknown): number | undefined {
   const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
   return typeof n === "number" && Number.isFinite(n) ? n : undefined;
@@ -72,7 +60,7 @@ function lineArg(value: unknown): number | undefined {
 
 /**
  * Results Jev judged and left alone, with the user turn they were judged in.
- * Within one agent run the user turn does not advance, so the cost trigger
+ * Within one agent run the user turn does not advance, so a mid-run trigger
  * would otherwise re-send the same large "leave" results to Jev on every model
  * call. They are skipped until the next user message: the task Jev judges
  * against is the recent user messages, so a new one is what can change the
@@ -191,17 +179,30 @@ function withDecisions(messages: PiMessage[], store: DecisionStore): PiMessage[]
 }
 
 export async function handleContext(input: HandleInput): Promise<HandleOutput> {
-  const unchanged: HandleOutput = {
-    messages: null, sweep: null, trigger: null,
-    cooldownUntilTurn: input.cooldownUntilTurn,
-    lastForcedFraction: input.lastForcedFraction,
-    lastForcedEligible: input.lastForcedEligible,
-  };
-  if (!input.config.enabled || input.client === null) {
-    // Decisions are immutable: "/token-saver off" stops sweeps but existing
-    // stubs stay applied (spec §7); only the sweep is gated on `enabled`.
-    return { ...unchanged, messages: withDecisions(input.messages, input.store) };
-  }
+  const idle = (reason: NonNullable<HandleOutput["idle"]>): HandleOutput => ({
+    messages: withDecisions(input.messages, input.store),
+    sweep: null, trigger: null, arming: input.arming, idle: reason,
+  });
+  // Decisions are immutable: "/token-saver off" stops sweeps but existing
+  // stubs stay applied (spec §7); only the sweep is gated on `enabled`.
+  if (!input.config.enabled || input.client === null) return idle("disabled");
+  if (input.usage === null) return idle("no-usage");
+
+  const { tokens, window } = input.usage;
+  const { config, reserveTokens } = input;
+  const turnBase = turnLevel(window, reserveTokens, config) * window;
+  const emergencyBase = emergencyLevel(window, reserveTokens, config.contextLevel) * window;
+  const compactionPoint = window - reserveTokens;
+  const turnArmAt = input.arming.turnArmAt ?? turnBase;
+  const emergencyArmAt = input.arming.emergencyArmAt ?? emergencyBase;
+
+  // The first context of a turn ends with the user's message; mid-run ones end
+  // with a tool result. Sweeping only there puts the re-processing wait where
+  // the user already expects a pause.
+  const atTurnStart = input.messages.at(-1)?.role === "user";
+  const trigger: "turn" | "context" | null =
+    tokens >= emergencyArmAt ? "context" : atTurnStart && tokens >= turnArmAt ? "turn" : null;
+  if (trigger === null) return idle(atTurnStart ? "below-level" : "mid-run");
 
   const collected = collectResults(input.messages);
   const { touches, task, currentTurn } = collected;
@@ -216,32 +217,6 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
     (result) => !leftAlone.has(result.id) || nowSuperseded.has(result.id),
   );
 
-  // Relaxed eligibility, because that is what a forced sweep would act on.
-  const eligibleCount = selectEligible(results, input.store.get(), input.config, { minTurnsAgo: 1 }).length;
-  const fraction = input.contextFraction;
-  const forced =
-    fraction !== null &&
-    fraction >= input.config.contextLevel &&
-    eligibleCount > 0 &&
-    (input.lastForcedFraction === null ||
-      fraction >= input.lastForcedFraction + FORCE_STEP ||
-      eligibleCount > (input.lastForcedEligible ?? 0));
-  const trigger: "cost" | "context" | null = forced
-    ? "context"
-    : currentTurn >= input.cooldownUntilTurn
-      ? "cost"
-      : null;
-
-  if (trigger === null) {
-    return { ...unchanged, messages: withDecisions(input.messages, input.store) };
-  }
-
-  // T_after is the whole suffix (spec §6.1): every message's tokens from the
-  // earliest changed result to the end, not just tool-result tokens.
-  const tokensByIndex = new Map<number, number>();
-  input.messages.forEach((message, index) => {
-    tokensByIndex.set(index, messageTokens(message.content));
-  });
   const outcome = await runSweep({
     results,
     decided: input.store.get(),
@@ -252,14 +227,9 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
         .filter((touch) => touch.messageIndex > result.messageIndex)
         .map((touch) => `${touch.kind} ${touch.path}`)
         .join("; "),
-    tokensAfter: (messageIndex) => {
-      let sum = 0;
-      for (const [index, tokens] of tokensByIndex) if (index >= messageIndex) sum += tokens;
-      return sum;
-    },
-    callsSoFar: input.callsSoFar,
-    prices: input.prices,
-    config: input.config,
+    currentTokens: tokens,
+    targetTokens: config.lowWater * window,
+    config,
     client: input.client,
     currentTurn,
     trigger,
@@ -275,10 +245,10 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
     messages: withDecisions(input.messages, input.store),
     sweep: outcome,
     trigger: outcome.decisions.length > 0 ? trigger : null,
-    // Only a refused post-gate cools down; a Jev failure retries at the next trigger.
-    cooldownUntilTurn:
-      outcome.reason === "post-gate" ? currentTurn + COOLDOWN_TURNS : input.cooldownUntilTurn,
-    lastForcedFraction: forced ? fraction : input.lastForcedFraction,
-    lastForcedEligible: forced ? eligibleCount : input.lastForcedEligible,
+    arming: {
+      turnArmAt: nextArmAt(outcome.reached, window, config, turnBase, Infinity),
+      emergencyArmAt: nextArmAt(outcome.reached, window, config, emergencyBase, compactionPoint),
+    },
+    idle: null,
   };
 }
