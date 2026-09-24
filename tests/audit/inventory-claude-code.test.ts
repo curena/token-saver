@@ -186,6 +186,26 @@ describe("scanClaudeCode", () => {
     expect(items.map((i) => i.id)).toEqual(["pdf"]);
   });
 
+  it("lets a project skill shadow a user skill of the same name, once", () => {
+    // Claude Code resolves a name collision in the project's favour. Emitting both would
+    // give two inventory items sharing an id: the token table double-counts them, and
+    // applyProposals records the first proposal's freshly written value as the second
+    // proposal's "previous".
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: The user copy");
+    writeSkill(join(root, "project"), "pdf", "name: pdf\ndescription: The project copy");
+    const items = scan();
+    expect(items.map((i) => i.id)).toEqual(["pdf"]);
+    expect(items[0].description).toBe("The project copy");
+  });
+
+  it("lets a plugin skill shadow a user skill of the same name, once", () => {
+    writeSkill(join(root, "user"), "chart", "name: chart\ndescription: The user copy");
+    writeSkill(join(root, "plugin"), "chart", "name: chart\ndescription: The plugin copy");
+    const items = scan();
+    expect(items.map((i) => i.id)).toEqual(["chart"]);
+    expect(items[0].description).toBe("The plugin copy");
+  });
+
   // --- real-machine directory shapes ----------------------------------------------
 
   it("finds a skill reached through a symlinked directory", () => {

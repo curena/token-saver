@@ -151,9 +151,18 @@ function scanDir(
 
 export function scanClaudeCode(options: ScanOptions): InventoryItem[] {
   const overrides = readSkillOverrides(options.settingsPath);
-  return [
+  const found = [
     ...scanDir(options.userSkillsDir, "skill", overrides),
     ...scanDir(options.projectSkillsDir, "skill", overrides),
     ...(options.pluginSkillDirs ?? []).flatMap((dir) => scanDir(dir, "plugin-skill", overrides)),
   ];
+
+  // Ids are skill names, and the same name can appear in more than one root. The harness
+  // resolves such a collision in favour of the later-loaded copy, so later wins here too:
+  // project shadows user. De-duplicating matters beyond tidiness -- two items sharing an id
+  // make the token table double-count and make applyProposals record the first proposal's
+  // freshly written value as the second proposal's "previous".
+  const byId = new Map<string, InventoryItem>();
+  for (const item of found) byId.set(item.id, item);
+  return [...byId.values()];
 }

@@ -106,9 +106,18 @@ export function applyProposals(
 
   const previous: Record<string, string> = {};
   const applied: Record<string, string> = {};
+  // `previous` must hold each id's value from before this apply began. Two proposals can
+  // share an id, and by the second one `overrides[id]` already holds what the first wrote.
+  // A `!hasOwnProperty(previous, id)` guard is not enough on its own: an id with no prior
+  // override is deliberately absent from `previous`, so the second proposal would look
+  // uncaptured and record the just-written value. Track what has been seen explicitly.
+  const captured = new Set<string>();
   for (const proposal of proposals) {
-    if (Object.prototype.hasOwnProperty.call(overrides, proposal.id)) {
-      previous[proposal.id] = overrides[proposal.id];
+    if (!captured.has(proposal.id)) {
+      captured.add(proposal.id);
+      if (Object.prototype.hasOwnProperty.call(overrides, proposal.id)) {
+        previous[proposal.id] = overrides[proposal.id];
+      }
     }
     overrides[proposal.id] = proposal.to;
     applied[proposal.id] = proposal.to;

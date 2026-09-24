@@ -162,6 +162,46 @@ describe("applyProposals and undoLast", () => {
     expect(() => undoLast(store)).not.toThrow();
   });
 
+  it("records the pre-apply value once when two proposals share an id", () => {
+    // Two inventory items can share an id (a project skill shadowing a user one). Without
+    // a guard, the second proposal's `previous` capture reads back the value the first
+    // proposal just wrote, so --undo restores the new value and silently does nothing.
+    const settings = join(root, "settings.local.json");
+    writeFileSync(settings, JSON.stringify({ skillOverrides: { pdf: "name-only" } }), "utf8");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    const proposals = buildProposals(
+      [item("pdf", { currentState: "name-only" }), item("pdf", { currentState: "name-only" })],
+      fits, new Map(),
+    );
+    expect(proposals).toHaveLength(2); // the duplicate-id condition under test
+
+    applyProposals(proposals, settings, store, new Date());
+    expect(store.lastAudit()?.previous).toEqual({ pdf: "name-only" });
+
+    undoLast(store);
+    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("name-only");
+  });
+
+  it("keeps a duplicated id with no prior override absent from previous", () => {
+    // The sibling of the test above, and the reason the guard is a seen-set rather than
+    // `hasOwnProperty(previous, id)`: an id that had no override is deliberately absent
+    // from `previous`, so a hasOwnProperty guard would look "uncaptured" on the second
+    // proposal and record the value the first one just wrote -- making undo restore the
+    // new value instead of deleting the key.
+    const settings = join(root, "settings.local.json");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    const proposals = buildProposals([item("pdf"), item("pdf")], fits, new Map());
+    expect(proposals).toHaveLength(2);
+
+    applyProposals(proposals, settings, store, new Date());
+    expect(store.lastAudit()?.previous).toEqual({});
+
+    undoLast(store);
+    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides).toEqual({});
+  });
+
   it("leaves the settings file untouched when appendAudit throws (order-of-operations)", () => {
     const settings = join(root, "settings.local.json");
     const before = JSON.stringify({ skillOverrides: { cli: "on" } });
