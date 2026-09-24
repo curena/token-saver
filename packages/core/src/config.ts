@@ -8,7 +8,6 @@ export const DEFAULT_CONFIG: Config = {
   keepThreshold: 0.3,
   leaveAloneRatio: 0.7,
   minSaving: 500,
-  costMargin: 1.5,
   contextLevel: 0.85,
   highWater: 0.75,
   lowWater: 0.3,
@@ -20,7 +19,7 @@ export const DEFAULT_CONFIG: Config = {
 
 const NUMERIC_KEYS = [
   "minResultTokens", "protectTurns", "keepThreshold", "leaveAloneRatio",
-  "minSaving", "costMargin", "contextLevel", "highWater", "lowWater",
+  "minSaving", "contextLevel", "highWater", "lowWater",
   "expectedSaveRatio", "jevBudgetMs",
 ] as const;
 

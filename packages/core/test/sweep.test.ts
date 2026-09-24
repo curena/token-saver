@@ -5,8 +5,6 @@ import { DEFAULT_CONFIG } from "../src/config.js";
 import type { Decision, ResultRef } from "../src/types.js";
 import type { JevClient } from "../src/judge.js";
 
-const PRICES = { input: 3 / 1e6, cacheRead: 0.3 / 1e6, cacheWrite: 3.75 / 1e6 };
-
 function bigRead(id: string, path: string, messageIndex: number): ResultRef {
   const text = Array.from({ length: 400 }, (_, i) => `const value${i} = ${i};`).join("\n");
   return {
@@ -31,17 +29,12 @@ function input(over: Partial<SweepInput> = {}): SweepInput {
     touches: [],
     task: { recent_user_messages: ["go"], latest_assistant_text: "", working_files: [] },
     afterResultFor: () => "",
-    // A realistic suffix: the results themselves plus a small tail. The cost gate
-    // weighs the saving against what a rewrite re-caches, so an arbitrarily large
-    // suffix would make every sweep in these tests look unaffordable.
-    tokensAfter: (messageIndex) =>
-      results.filter((r) => r.messageIndex >= messageIndex).reduce((sum, r) => sum + r.tokens, 0) + 300,
-    callsSoFar: 40,
-    prices: PRICES,
+    currentTokens: 80_000,
+    targetTokens: 30_000,
     config: DEFAULT_CONFIG,
     client: allStale(),
     currentTurn: 9,
-    trigger: "cost",
+    trigger: "turn",
     ...over,
   };
 }
@@ -82,39 +75,61 @@ describe("runSweep", () => {
     expect(outcome.decisions[0]!.rendered).toContain("elided …");
   });
 
-  it("does nothing when the cost gate refuses", async () => {
-    const outcome = await runSweep(input({ tokensAfter: () => 900_000, callsSoFar: 3 }));
-    expect(outcome.reason).toBe("gate");
-    expect(outcome.decisions).toEqual([]);
-  });
-
-  it("discards decisions when the real saving fails the gate", async () => {
-    // Jev keeps everything, so actual savings are zero and the post-gate refuses.
-    const client: JevClient = { systemOne: async (request) => {
-      const answers: Record<string, { noul: number }> = {};
-      for (const key of Object.keys(request.questions)) answers[key] = { noul: 0.99 };
-      return { answers };
-    } };
-    const outcome = await runSweep(input({ client }));
-    expect(outcome.reason).toBe("post-gate");
-    expect(outcome.decisions).toEqual([]);
-  });
-
   it("changes nothing when Jev fails", async () => {
     const client: JevClient = { systemOne: async () => { throw new Error("boom"); } };
     const outcome = await runSweep(input({ client }));
     expect(outcome.reason).toBe("judge-failed");
     expect(outcome.decisions).toEqual([]);
-  });
-
-  it("ignores the pre-gate for the context trigger", async () => {
-    const outcome = await runSweep(input({ trigger: "context", tokensAfter: () => 900_000, callsSoFar: 3 }));
-    expect(outcome.reason).toBe("swept");
+    expect(outcome.reached).toBe(80_000);
   });
 
   it("reports no candidates when everything is protected", async () => {
     const outcome = await runSweep(input({ results: [bigRead("a", "src/app.ts", 10)].map((r) => ({ ...r, turnsAgo: 0 })) }));
     expect(outcome.reason).toBe("no-candidates");
+  });
+
+  it("does nothing when already at target", async () => {
+    const outcome = await runSweep(input({ currentTokens: 25_000 }));
+    expect(outcome.reason).toBe("at-target");
+    expect(outcome.decisions).toEqual([]);
+    expect(outcome.reached).toBe(25_000);
+  });
+
+  it("shortens only the newest result when that covers the need", async () => {
+    const perResult = bigRead("x", "x.ts", 1).tokens;
+    // expectedSaveRatio 0.5: one result's expected saving is enough.
+    const outcome = await runSweep(input({ currentTokens: 30_000 + Math.floor(perResult * 0.4) }));
+    expect(outcome.decisions.map((d) => d.id)).toEqual(["b"]);
+    expect(outcome.fromIndex).toBe(12);
+  });
+
+  it("reports the tokens reached", async () => {
+    const outcome = await runSweep(input());
+    expect(outcome.reason).toBe("swept");
+    expect(outcome.reached).toBe(80_000 - outcome.savedTokens);
+    expect(outcome.fromIndex).toBe(10);
+  });
+
+  it("keeps superseded stubs when Jev fails", async () => {
+    const failing: JevClient = { systemOne: async () => { throw new Error("down"); } };
+    const outcome = await runSweep(input({
+      client: failing,
+      touches: [{ path: "src/app.ts", messageIndex: 20, kind: "edit" }],
+    }));
+    expect(outcome.reason).toBe("judge-failed");
+    expect(outcome.decisions.map((d) => d.id)).toEqual(["a"]);
+    expect(outcome.decisions[0]!.reason).toBe("superseded");
+  });
+
+  it("reports nothing-shortened when Jev keeps everything", async () => {
+    const keepAll: JevClient = { systemOne: async (request) => {
+      const answers: Record<string, { noul: number }> = {};
+      for (const key of Object.keys(request.questions)) answers[key] = { noul: 0.99 };
+      return { answers };
+    } };
+    const outcome = await runSweep(input({ client: keepAll }));
+    expect(outcome.reason).toBe("nothing-shortened");
+    expect(outcome.decisions).toEqual([]);
   });
 });
 

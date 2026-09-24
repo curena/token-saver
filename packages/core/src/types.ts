@@ -38,7 +38,8 @@ export interface Decision {
 
 export interface SweepEntryData {
   decisions: Decision[];
-  trigger: "cost" | "context";
+  /** "cost" appears only in entries written before the context-budget triggers. */
+  trigger: "turn" | "context" | "cost";
   at: string;
 }
 
@@ -56,7 +57,6 @@ export interface Config {
   keepThreshold: number;
   leaveAloneRatio: number;
   minSaving: number;
-  costMargin: number;
   contextLevel: number;
   /** Turn-trigger level, as a fraction of the context window. */
   highWater: number;

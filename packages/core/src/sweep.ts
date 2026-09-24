@@ -6,9 +6,9 @@ import { decideLevel } from "./policy/decide.js";
 import { selectEligible } from "./policy/eligibility.js";
 import { findSuperseded } from "./policy/staleness.js";
 import type { FileTouch } from "./policy/staleness.js";
-import { planCostGate } from "./policy/cost.js";
+import { planBudgetCut } from "./policy/budget.js";
 import { renderPartial, renderStub } from "./render.js";
-import type { Config, Decision, Prices, ResultRef } from "./types.js";
+import type { Config, Decision, ResultRef } from "./types.js";
 
 export interface SweepInput {
   results: ResultRef[];
@@ -16,13 +16,14 @@ export interface SweepInput {
   touches: FileTouch[];
   task: TaskState;
   afterResultFor: (result: ResultRef) => string;
-  tokensAfter: (messageIndex: number) => number;
-  callsSoFar: number;
-  prices: Prices | null;
+  /** Context tokens now. */
+  currentTokens: number;
+  /** Context tokens to get down to. */
+  targetTokens: number;
   config: Config;
   client: JevClient;
   currentTurn: number;
-  trigger: "cost" | "context";
+  trigger: "turn" | "context";
   signal?: AbortSignal;
 }
 
@@ -34,11 +35,11 @@ export interface SweepOutcome {
   jevInputTokens: number;
   /** Chunk probabilities per judged result, for the replay retention report. */
   probabilitiesById: Record<string, number[]>;
-  reason: "swept" | "no-candidates" | "gate" | "post-gate" | "judge-failed";
-}
-
-function empty(reason: SweepOutcome["reason"], jevRequests = 0, jevInputTokens = 0): SweepOutcome {
-  return { decisions: [], savedTokens: 0, jevRequests, jevInputTokens, probabilitiesById: {}, reason };
+  reason: "swept" | "at-target" | "no-candidates" | "nothing-shortened" | "judge-failed";
+  /** Earliest shortened message index; everything after it is re-processed. -1 if none. */
+  fromIndex: number;
+  /** Context tokens after the sweep: currentTokens - savedTokens. */
+  reached: number;
 }
 
 export function firstLineOf(result: ResultRef): number {
@@ -48,38 +49,53 @@ export function firstLineOf(result: ResultRef): number {
 
 export async function runSweep(input: SweepInput): Promise<SweepOutcome> {
   const { config, trigger } = input;
-  let eligible = selectEligible(input.results, input.decided, config, {
+  const finish = (
+    decisions: Decision[],
+    reason: SweepOutcome["reason"],
+    jevRequests = 0,
+    jevInputTokens = 0,
+    probabilitiesById: Record<string, number[]> = {},
+  ): SweepOutcome => {
+    const savedTokens = decisions.reduce((sum, decision) => sum + decision.savedTokens, 0);
+    const indexes = decisions.map((d) => input.results.find((r) => r.id === d.id)!.messageIndex);
+    return {
+      decisions, savedTokens, jevRequests, jevInputTokens, probabilitiesById, reason,
+      fromIndex: indexes.length > 0 ? Math.min(...indexes) : -1,
+      reached: input.currentTokens - savedTokens,
+    };
+  };
+
+  const need = input.currentTokens - input.targetTokens;
+  if (need <= 0) return finish([], "at-target");
+
+  const eligible = selectEligible(input.results, input.decided, config, {
     minTurnsAgo: trigger === "context" ? 1 : config.protectTurns,
   });
-  if (eligible.length === 0) return empty("no-candidates");
+  if (eligible.length === 0) return finish([], "no-candidates");
 
   const superseded = findSuperseded(eligible, input.touches);
-
-  if (trigger === "cost") {
-    const gate = planCostGate({
-      candidates: eligible.map((result) => ({
-        id: result.id,
-        messageIndex: result.messageIndex,
-        expectedSave: superseded.has(result.id)
-          ? result.tokens
-          : Math.round(result.tokens * config.expectedSaveRatio),
-      })),
-      tokensAfter: input.tokensAfter,
-      callsSoFar: input.callsSoFar,
-      prices: input.prices,
-      costMargin: config.costMargin,
-    });
-    if (!gate.sweep) return empty("gate");
-    const allowed = new Set(gate.ids);
-    eligible = eligible.filter((result) => allowed.has(result.id));
-  }
+  const cut = planBudgetCut(
+    eligible.map((result) => ({
+      id: result.id,
+      messageIndex: result.messageIndex,
+      expectedSave: superseded.has(result.id)
+        ? result.tokens
+        : Math.round(result.tokens * config.expectedSaveRatio),
+    })),
+    need,
+  );
+  const chosen = new Set(cut.ids);
+  // Superseded stubs first: they need no Jev call, so they survive a Jev failure.
+  const ordered = eligible
+    .filter((result) => chosen.has(result.id))
+    .sort((a, b) => Number(superseded.has(b.id)) - Number(superseded.has(a.id)));
 
   const decisions: Decision[] = [];
   const probabilitiesById: Record<string, number[]> = {};
   let jevRequests = 0;
   let jevInputTokens = 0;
 
-  for (const result of eligible) {
+  for (const result of ordered) {
     const chunks = chunkResult(result.toolName, result.text, firstLineOf(result));
     const lineCount = result.text.split("\n").length;
 
@@ -96,7 +112,9 @@ export async function runSweep(input: SweepInput): Promise<SweepOutcome> {
     const probabilities = await judgeResult(input.client, request, chunks.length, config, input.signal);
     jevRequests++;
     jevInputTokens += estimateTokens(JSON.stringify(request));
-    if (probabilities === null) return empty("judge-failed", jevRequests, jevInputTokens);
+    if (probabilities === null) {
+      return finish(decisions, "judge-failed", jevRequests, jevInputTokens, probabilitiesById);
+    }
     probabilitiesById[result.id] = probabilities;
 
     const plan = decideLevel(chunks, probabilities, config);
@@ -114,25 +132,11 @@ export async function runSweep(input: SweepInput): Promise<SweepOutcome> {
     });
   }
 
-  const savedTokens = decisions.reduce((sum, decision) => sum + decision.savedTokens, 0);
-  if (decisions.length === 0) return empty("post-gate", jevRequests, jevInputTokens);
-
-  if (trigger === "cost") {
-    const postGate = planCostGate({
-      candidates: decisions.map((decision) => ({
-        id: decision.id,
-        messageIndex: input.results.find((r) => r.id === decision.id)!.messageIndex,
-        expectedSave: decision.savedTokens,
-      })),
-      tokensAfter: input.tokensAfter,
-      callsSoFar: input.callsSoFar,
-      prices: input.prices,
-      costMargin: config.costMargin,
-    });
-    if (!postGate.sweep) return empty("post-gate", jevRequests, jevInputTokens);
-  }
-
-  return { decisions, savedTokens, jevRequests, jevInputTokens, probabilitiesById, reason: "swept" };
+  return finish(
+    decisions,
+    decisions.length > 0 ? "swept" : "nothing-shortened",
+    jevRequests, jevInputTokens, probabilitiesById,
+  );
 }
 
 export function applyDecisions<M extends { id: string; text: string }>(
