@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildProfile } from "../src/audit/profile.js";
 import { recentPrompts } from "../src/audit/usage.js";
+import { RECENT_USE_DAYS } from "../src/core/policy.js";
 
 const root = process.argv[2];
 const transcriptDir = process.argv[3];
@@ -78,8 +79,10 @@ function findReplacedSpans(before: string, after: string): string[] {
 
 console.log(`=== Measuring against root=${root} transcriptDir=${transcriptDir} ===\n`);
 
-// The real pipeline output — this is what actually gets sent to Jev.
-const prompts = recentPrompts(transcriptDir, 20);
+// The real pipeline output — this is what actually gets sent to Jev, including the same
+// 30-day window the audit applies.
+const since = new Date(Date.now() - RECENT_USE_DAYS * 86_400_000);
+const prompts = recentPrompts(transcriptDir, 20, since);
 const profile = buildProfile(root, prompts);
 
 const rawReadmeText = rawReadme();
