@@ -5,7 +5,14 @@ import { claudePaths } from "./adapters/claude-code/paths.js";
 import { fingerprint } from "./audit/fingerprint.js";
 import { scanClaudeCode } from "./audit/inventory-claude-code.js";
 import { buildProfile } from "./audit/profile.js";
-import { applyProposals, buildProposals, judgeFit, renderProposals, undoLast } from "./audit/run.js";
+import {
+  applyProposals,
+  buildProposals,
+  judgeFit,
+  MalformedSettingsError,
+  renderProposals,
+  undoLast,
+} from "./audit/run.js";
 import { countSkillUses, recentPrompts } from "./audit/usage.js";
 import { RECENT_USE_DAYS } from "./core/policy.js";
 import { Jev } from "./runtime/jev.js";
@@ -59,7 +66,15 @@ async function audit(flags: string[]): Promise<number> {
 
   const { root, paths, store } = context();
   if (flags.includes("--undo")) {
-    console.log(undoLast(store));
+    try {
+      console.log(undoLast(store, new Date()));
+    } catch (err) {
+      if (err instanceof MalformedSettingsError) {
+        console.error(err.message);
+        return 1;
+      }
+      throw err;
+    }
     return 0;
   }
 
@@ -89,8 +104,18 @@ async function audit(flags: string[]): Promise<number> {
   console.log(renderProposals(proposals));
 
   if (flags.includes("--apply")) {
-    const count = applyProposals(proposals, paths.settingsPath, store, new Date());
-    console.log(`Applied ${count} change(s) to ${paths.settingsPath}.`);
+    try {
+      const count = applyProposals(proposals, paths.settingsPath, store, new Date());
+      console.log(`Applied ${count} change(s) to ${paths.settingsPath}.`);
+    } catch (err) {
+      if (err instanceof MalformedSettingsError) {
+        console.error(err.message);
+        // Deliberately return before writing the fingerprint: nothing was applied, so the
+        // next session-start must still see this setup as un-audited rather than current.
+        return 1;
+      }
+      throw err;
+    }
   } else if (proposals.length > 0) {
     console.log("\nRun with --apply to write these, and --undo to revert.");
   }

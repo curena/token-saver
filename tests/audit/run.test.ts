@@ -1,8 +1,15 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { applyProposals, buildProposals, judgeFit, renderProposals, undoLast } from "../../src/audit/run.js";
+import {
+  applyProposals,
+  buildProposals,
+  judgeFit,
+  MalformedSettingsError,
+  renderProposals,
+  undoLast,
+} from "../../src/audit/run.js";
 import { Jev } from "../../src/runtime/jev.js";
 import { Store } from "../../src/runtime/store.js";
 import type { FitLevel, InventoryItem, ProjectProfile } from "../../src/core/types.js";
@@ -135,7 +142,7 @@ describe("applyProposals and undoLast", () => {
       settings, store, new Date(),
     );
     expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("user-invocable-only");
-    undoLast(store);
+    undoLast(store, new Date());
     expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("name-only");
   });
 
@@ -144,22 +151,30 @@ describe("applyProposals and undoLast", () => {
     const store = new Store(root);
     const fits = new Map<string, FitLevel>([["pdf", 4]]);
     applyProposals(buildProposals([item("pdf")], fits, new Map()), settings, store, new Date());
-    undoLast(store);
+    undoLast(store, new Date());
     expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides).toEqual({});
   });
 
   it("reports when there is nothing to undo", () => {
-    expect(undoLast(new Store(root))).toMatch(/nothing/i);
+    expect(undoLast(new Store(root), new Date())).toMatch(/nothing/i);
   });
 
-  it("does not throw when undoLast is called twice in a row", () => {
+  it("makes a second consecutive undo a no-op rather than re-applying anything", () => {
     const settings = join(root, "settings.local.json");
     const store = new Store(root);
     const fits = new Map<string, FitLevel>([["pdf", 4]]);
     applyProposals(buildProposals([item("pdf")], fits, new Map()), settings, store, new Date());
-    expect(() => undoLast(store)).not.toThrow();
-    // Second undo: the revert itself was recorded, so this undoes the revert (idempotent-safe, not a throw).
-    expect(() => undoLast(store)).not.toThrow();
+
+    undoLast(store, new Date());
+    const afterFirstUndo = readFileSync(settings, "utf8");
+    expect(JSON.parse(afterFirstUndo).skillOverrides).toEqual({});
+
+    // The second undo finds the revert record, whose `applied` is {}. It does NOT "undo the
+    // revert" -- it iterates nothing and reports zero changes. Asserting only `not.toThrow`
+    // here would pass no matter what the file ended up containing.
+    const message = undoLast(store, new Date());
+    expect(message).toMatch(/Reverted 0 change/);
+    expect(readFileSync(settings, "utf8")).toBe(afterFirstUndo);
   });
 
   it("records the pre-apply value once when two proposals share an id", () => {
@@ -179,7 +194,7 @@ describe("applyProposals and undoLast", () => {
     applyProposals(proposals, settings, store, new Date());
     expect(store.lastAudit()?.previous).toEqual({ pdf: "name-only" });
 
-    undoLast(store);
+    undoLast(store, new Date());
     expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("name-only");
   });
 
@@ -198,7 +213,7 @@ describe("applyProposals and undoLast", () => {
     applyProposals(proposals, settings, store, new Date());
     expect(store.lastAudit()?.previous).toEqual({});
 
-    undoLast(store);
+    undoLast(store, new Date());
     expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides).toEqual({});
   });
 
@@ -219,53 +234,133 @@ describe("applyProposals and undoLast", () => {
     store.appendAudit = originalAppend;
   });
 
-  it("treats a malformed (non-JSON) settings file as empty and still applies", () => {
+  // A settings file that cannot be parsed as a JSON object is NOT "no settings yet". The
+  // fixtures below each carry an unrelated key that a blind rewrite would destroy, with no
+  // record of it in the audit log and so no way back via --undo.
+
+  it("refuses to write a malformed (non-JSON) settings file and leaves it byte-for-byte intact", () => {
+    const settings = join(root, "settings.local.json");
+    // A trailing comma: the single most common way a hand-edited settings.json breaks.
+    const before = '{\n  "permissions": { "allow": ["Bash(ls:*)"] },\n  "env": { "FOO": "bar" },\n}\n';
+    writeFileSync(settings, before, "utf8");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    const proposals = buildProposals([item("pdf")], fits, new Map());
+
+    expect(() => applyProposals(proposals, settings, store, new Date())).toThrow(MalformedSettingsError);
+    expect(readFileSync(settings, "utf8")).toBe(before);
+    // Nothing was recorded either: there is no half-applied state to undo.
+    expect(store.lastAudit()).toBeNull();
+  });
+
+  it("names the offending file and how to recover in the refusal message", () => {
     const settings = join(root, "settings.local.json");
     writeFileSync(settings, "{not valid json", "utf8");
-    const store = new Store(root);
     const fits = new Map<string, FitLevel>([["pdf", 4]]);
-    const count = applyProposals(buildProposals([item("pdf")], fits, new Map()), settings, store, new Date());
-    expect(count).toBe(1);
-    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("user-invocable-only");
+    const proposals = buildProposals([item("pdf")], fits, new Map());
+    expect(() => applyProposals(proposals, settings, new Store(root), new Date()))
+      .toThrow(new RegExp(`${settings}.*fix or remove`, "is"));
   });
 
-  it("treats a settings file that is valid JSON but not an object as empty", () => {
+  it("refuses to write a settings file that is valid JSON but not an object", () => {
     const settings = join(root, "settings.local.json");
-    writeFileSync(settings, "[]", "utf8");
+    const before = '[{ "permissions": { "allow": ["Bash(ls:*)"] } }]';
+    writeFileSync(settings, before, "utf8");
     const store = new Store(root);
     const fits = new Map<string, FitLevel>([["pdf", 4]]);
-    const count = applyProposals(buildProposals([item("pdf")], fits, new Map()), settings, store, new Date());
-    expect(count).toBe(1);
-    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("user-invocable-only");
+    const proposals = buildProposals([item("pdf")], fits, new Map());
+
+    expect(() => applyProposals(proposals, settings, store, new Date())).toThrow(MalformedSettingsError);
+    expect(readFileSync(settings, "utf8")).toBe(before);
+    expect(store.lastAudit()).toBeNull();
   });
 
-  it("treats a skillOverrides value that is not an object as empty overrides", () => {
+  it("refuses to revert into a malformed settings file too", () => {
     const settings = join(root, "settings.local.json");
-    writeFileSync(settings, JSON.stringify({ skillOverrides: "not-an-object" }), "utf8");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    applyProposals(buildProposals([item("pdf")], fits, new Map()), settings, store, new Date());
+    // The user hand-edited the file between apply and undo and broke it.
+    const before = '{ "permissions": { "allow": ["Bash(ls:*)"] },,, }';
+    writeFileSync(settings, before, "utf8");
+
+    expect(() => undoLast(store, new Date())).toThrow(MalformedSettingsError);
+    expect(readFileSync(settings, "utf8")).toBe(before);
+  });
+
+  it("still applies when the file is a settings object whose skillOverrides value is junk", () => {
+    // Distinct from the cases above: the FILE parses as a settings object, so nothing about
+    // it is unrecoverable. Only the `skillOverrides` value is unusable, and repairing that
+    // is exactly this tool's job -- every unrelated key must survive.
+    const settings = join(root, "settings.local.json");
+    writeFileSync(
+      settings,
+      JSON.stringify({ permissions: { allow: ["Bash(ls:*)"] }, skillOverrides: "not-an-object" }),
+      "utf8",
+    );
     const store = new Store(root);
     const fits = new Map<string, FitLevel>([["pdf", 4]]);
     const count = applyProposals(buildProposals([item("pdf")], fits, new Map()), settings, store, new Date());
     expect(count).toBe(1);
-    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("user-invocable-only");
+    const written = JSON.parse(readFileSync(settings, "utf8"));
+    expect(written.skillOverrides.pdf).toBe("user-invocable-only");
+    expect(written.permissions).toEqual({ allow: ["Bash(ls:*)"] });
   });
 
-  it("leaves the settings file untouched when appendAudit throws during undoLast (order-of-operations)", () => {
+  it("leaves no temporary file behind after a successful apply", () => {
+    const settings = join(root, "settings.local.json");
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    applyProposals(buildProposals([item("pdf")], fits, new Map()), settings, new Store(root), new Date());
+    expect(readdirSync(root).filter((f) => f.includes(".tmp-"))).toEqual([]);
+  });
+
+  it("reverts on a retried --undo after the first undo's write failed", () => {
+    // The write can fail for reasons outside our control (ENOSPC, EACCES, a read-only
+    // mount). If undoLast records the revert BEFORE writing, that record -- whose `applied`
+    // is {} -- becomes the last audit entry, so a retried --undo iterates nothing and
+    // cheerfully reports success while settings are still fully applied. There is then no
+    // way to revert at all.
     const settings = join(root, "settings.local.json");
     writeFileSync(settings, JSON.stringify({ skillOverrides: { pdf: "name-only" } }), "utf8");
     const store = new Store(root);
     const fits = new Map<string, FitLevel>([["pdf", 4]]);
-    // Seed a real audit entry via a genuine (unstubbed) apply, so undoLast has something to revert.
     applyProposals(
       buildProposals([item("pdf", { currentState: "name-only" })], fits, new Map()),
       settings, store, new Date(),
     );
-    const afterApply = readFileSync(settings, "utf8");
+    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("user-invocable-only");
 
-    const originalAppend = store.appendAudit.bind(store);
-    store.appendAudit = () => { throw new Error("boom"); };
-    expect(() => undoLast(store)).toThrow("boom");
-    expect(readFileSync(settings, "utf8")).toBe(afterApply);
-    store.appendAudit = originalAppend;
+    // Make the write fail however it is implemented: the file itself is read-only (blocks a
+    // direct rewrite) and so is its directory (blocks creating a temp file to rename over).
+    chmodSync(settings, 0o444);
+    chmodSync(root, 0o555);
+    try {
+      expect(() => undoLast(store, new Date())).toThrow();
+    } finally {
+      chmodSync(root, 0o755);
+      chmodSync(settings, 0o644);
+    }
+    // The failed attempt changed nothing on disk...
+    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("user-invocable-only");
+
+    // ...and the retry still finds the apply entry to revert, rather than a stranded
+    // revert record that reverts nothing.
+    const message = undoLast(store, new Date());
+    expect(message).toMatch(/Reverted 1 change/);
+    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("name-only");
+  });
+
+  it("timestamps the revert entry with the time of the undo, not of the original apply", () => {
+    const settings = join(root, "settings.local.json");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    const appliedAt = new Date("2026-09-01T00:00:00.000Z");
+    const revertedAt = new Date("2026-09-02T00:00:00.000Z");
+    applyProposals(buildProposals([item("pdf")], fits, new Map()), settings, store, appliedAt);
+
+    undoLast(store, revertedAt);
+    // A non-monotonic log makes "what happened, in what order" unanswerable.
+    expect(store.lastAudit()?.at).toBe(revertedAt.toISOString());
   });
 
   it("preserves unrelated keys and restores original override values on an apply-then-undo round trip", () => {
@@ -291,7 +386,7 @@ describe("applyProposals and undoLast", () => {
     });
     expect(afterApply.other).toBe(1);
 
-    undoLast(store);
+    undoLast(store, new Date());
     const afterUndo = JSON.parse(readFileSync(settings, "utf8"));
     expect(afterUndo.other).toBe(1);
     expect(afterUndo.skillOverrides.pdf).toBe("name-only");

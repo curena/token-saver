@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { proposeState } from "../core/policy.js";
 import { FIT_BATCH_SIZE, fitQuestions, fitState, parseFit } from "../core/questions/fit.js";
@@ -79,19 +79,62 @@ function readOverrides(settings: Record<string, unknown>): Record<string, string
   return isPlainObject(raw) ? { ...(raw as Record<string, string>) } : {};
 }
 
-function readSettings(path: string): Record<string, unknown> {
-  if (!existsSync(path)) return {};
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return isPlainObject(parsed) ? parsed : {};
-  } catch {
-    return {};
+/**
+ * A settings file exists but cannot be read back as a JSON object. Thrown rather than
+ * swallowed: the alternative is rewriting the file from `{}` and silently destroying
+ * `permissions`, `env`, `hooks` and everything else it held, with nothing recorded in the
+ * audit log and so no path back through `--undo`.
+ */
+export class MalformedSettingsError extends Error {
+  constructor(readonly path: string) {
+    super(
+      `token-saver: ${path} exists but is not a readable JSON object, so it cannot be ` +
+        "updated without destroying whatever it holds. Fix or remove the file, then re-run.",
+    );
+    this.name = "MalformedSettingsError";
   }
 }
 
+/**
+ * Read a settings file, distinguishing **absent** (fine: there are no settings yet, so `{}`)
+ * from **unparseable** (not fine: there is content we cannot round-trip). Note this differs
+ * deliberately from `readOverrides` below, which does fail open -- a junk `skillOverrides`
+ * value inside an otherwise valid settings object is exactly what this tool repairs, and
+ * rewriting it loses nothing else.
+ */
+function readSettings(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw new MalformedSettingsError(path);
+  }
+  if (!isPlainObject(parsed)) throw new MalformedSettingsError(path);
+  return parsed;
+}
+
+/**
+ * Write settings atomically: a temp file in the same directory, then a rename over the
+ * target. `writeFileSync` truncates before it writes, so a Ctrl-C or an ENOSPC partway
+ * through leaves a truncated settings file; `rename` within one filesystem is atomic, so
+ * the target is either the old content or the new one and never something in between.
+ */
 function writeSettings(path: string, settings: Record<string, unknown>): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  const tmp = `${path}.tmp-${process.pid}`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+    renameSync(tmp, path);
+  } catch (err) {
+    // Don't leave the temp file lying next to the user's settings on a failed write.
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // Best effort only; the original error is the one that matters.
+    }
+    throw err;
+  }
 }
 
 export function applyProposals(
@@ -135,14 +178,9 @@ export function applyProposals(
   return proposals.length;
 }
 
-export function undoLast(store: Store): string {
+export function undoLast(store: Store, now: Date): string {
   const entry = store.lastAudit();
   if (!entry) return "Nothing to undo.";
-
-  // Record the revert BEFORE mutating settings, for the same reason as applyProposals:
-  // if this throws, the settings file must still reflect the last successfully recorded
-  // state.
-  store.appendAudit({ at: entry.at, file: entry.file, previous: entry.applied, applied: {} });
 
   const settings = readSettings(entry.file);
   const overrides = readOverrides(settings);
@@ -155,5 +193,15 @@ export function undoLast(store: Store): string {
   }
   settings.skillOverrides = overrides;
   writeSettings(entry.file, settings);
+
+  // Record the revert AFTER the write, the opposite order from applyProposals, because the
+  // two failure modes are not symmetric. applyProposals' undo is idempotent, so recording
+  // first is safe there. This one is not: a revert record's `applied` is {}, so if the
+  // write then fails, a retried --undo finds that record, iterates nothing, and reports
+  // success while settings are still fully applied -- with no way left to revert at all.
+  // Writing first means a failure here leaves settings reverted and the record missing, and
+  // a retried --undo simply reverts the same entry again, which is a no-op. The write
+  // itself is atomic (see writeSettings), so there is no partially-written state to record.
+  store.appendAudit({ at: now.toISOString(), file: entry.file, previous: entry.applied, applied: {} });
   return `Reverted ${Object.keys(entry.applied).length} change(s) in ${entry.file}.`;
 }

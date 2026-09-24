@@ -30,12 +30,27 @@ function snapshot(dir: string): Record<string, string> {
 // `fitQuestions` (src/core/questions/fit.ts) also imports the real `score` builder from
 // this same package unconditionally, so the mock must keep every other export intact via
 // `importOriginal` and only replace `TypeSafeClient`.
-const { mockSystemOne } = vi.hoisted(() => ({ mockSystemOne: vi.fn() }));
+// TypeSafeClient is a plain class rather than `vi.fn().mockImplementation(...)` on purpose:
+// `vi.restoreAllMocks()` in afterEach below clears a vi.fn's implementation, and because the
+// module mock is instantiated once for the whole file, every test after the first would then
+// get `new TypeSafeClient()` === {} -- a client with no `systemOne` at all. Jev fails open on
+// that, so every judgment silently vanished and any test needing a real proposal could only
+// pass when run alone. Constructor configs are captured in an array so they can still be
+// asserted on.
+const { mockSystemOne, clientConfigs } = vi.hoisted(() => ({
+  mockSystemOne: vi.fn(),
+  clientConfigs: [] as any[],
+}));
 vi.mock("@typesafe-ai/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@typesafe-ai/sdk")>();
   return {
     ...actual,
-    TypeSafeClient: vi.fn().mockImplementation(() => ({ systemOne: mockSystemOne })),
+    TypeSafeClient: class {
+      systemOne = mockSystemOne;
+      constructor(config: unknown) {
+        clientConfigs.push(config);
+      }
+    },
   };
 });
 
@@ -65,6 +80,7 @@ beforeEach(() => {
   process.env.TOKEN_SAVER_ROOT = project;
   delete process.env.TYPESAFE_API_KEY;
   mockSystemOne.mockReset();
+  clientConfigs.length = 0;
 });
 
 afterEach(() => {
@@ -155,6 +171,83 @@ describe("cli", () => {
     expect(err.join("\n")).toMatch(/usage/i);
     expect(err.join("\n")).toMatch(/--frobnicate/);
     expect(out.join("\n")).not.toMatch(/no changes/i); // never got as far as running the audit
+  });
+
+  // --- end-to-end --apply / --undo --------------------------------------------------
+  //
+  // The wiring from claudePaths().settingsPath into applyProposals is the only code that
+  // touches a real settings file, and unit tests exercise applyProposals against a path
+  // they construct themselves. These drive it through `main` against a temp project.
+
+  /** Make Jev judge every skill "irrelevant" (rubric index 3), so there is a proposal. */
+  function judgeEverythingIrrelevant() {
+    process.env.TYPESAFE_API_KEY = "test-key";
+    mockSystemOne.mockImplementation(async (req: any) => ({
+      answers: Object.fromEntries(
+        Object.keys(req.questions).map((k) => [k, { score: 3, confidence: 0.9 }]),
+      ),
+    }));
+  }
+
+  it("--apply writes skillOverrides to the project settings file, and --undo restores it", async () => {
+    judgeEverythingIrrelevant();
+    addSkill("pdf", "Read, edit and create PDF files");
+    const settings = join(project, ".claude", "settings.local.json");
+    mkdirSync(join(project, ".claude"), { recursive: true });
+    writeFileSync(settings, JSON.stringify({ permissions: { allow: ["Bash(ls:*)"] } }), "utf8");
+
+    expect(await main(["audit", "--apply"])).toBe(0);
+    const applied = JSON.parse(readFileSync(settings, "utf8"));
+    expect(applied.skillOverrides.pdf).toBe("user-invocable-only");
+    expect(applied.permissions).toEqual({ allow: ["Bash(ls:*)"] });
+    expect(out.join("\n")).toMatch(/Applied 1 change/);
+
+    out.length = 0;
+    expect(await main(["audit", "--undo"])).toBe(0);
+    const reverted = JSON.parse(readFileSync(settings, "utf8"));
+    expect(reverted.skillOverrides).toEqual({});
+    expect(reverted.permissions).toEqual({ allow: ["Bash(ls:*)"] });
+    expect(out.join("\n")).toMatch(/Reverted 1 change/);
+  });
+
+  it("--apply creates the settings file and its .claude directory when absent", async () => {
+    judgeEverythingIrrelevant();
+    addSkill("pdf", "Read, edit and create PDF files");
+    const settings = join(project, ".claude", "settings.local.json");
+    expect(existsSync(settings)).toBe(false);
+
+    expect(await main(["audit", "--apply"])).toBe(0);
+    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides.pdf).toBe("user-invocable-only");
+  });
+
+  it("refuses --apply on a malformed settings file: exits 1 and leaves it byte-for-byte intact", async () => {
+    judgeEverythingIrrelevant();
+    addSkill("pdf", "Read, edit and create PDF files");
+    const settings = join(project, ".claude", "settings.local.json");
+    mkdirSync(join(project, ".claude"), { recursive: true });
+    const before = '{ "permissions": { "allow": ["Bash(ls:*)"] }, }';
+    writeFileSync(settings, before, "utf8");
+
+    expect(await main(["audit", "--apply"])).toBe(1);
+    expect(readFileSync(settings, "utf8")).toBe(before);
+    expect(err.join("\n")).toContain(settings);
+    expect(err.join("\n")).toMatch(/fix or remove/i);
+    // No fingerprint either: nothing was applied, so this setup is still un-audited.
+    expect(existsSync(join(project, ".token-saver", "audit", "fingerprint"))).toBe(false);
+  });
+
+  it("refuses --undo on a malformed settings file and exits 1", async () => {
+    judgeEverythingIrrelevant();
+    addSkill("pdf", "Read, edit and create PDF files");
+    const settings = join(project, ".claude", "settings.local.json");
+    expect(await main(["audit", "--apply"])).toBe(0);
+
+    const before = '{ "skillOverrides": {,} }';
+    writeFileSync(settings, before, "utf8");
+    out.length = 0;
+    expect(await main(["audit", "--undo"])).toBe(1);
+    expect(readFileSync(settings, "utf8")).toBe(before);
+    expect(err.join("\n")).toContain(settings);
   });
 
   it("warns on stderr and still exits 0 when every fit judgment fails", async () => {
