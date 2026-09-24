@@ -288,6 +288,58 @@ describe("applyProposals and undoLast", () => {
     expect(readFileSync(settings, "utf8")).toBe(before);
   });
 
+  // An empty file holds nothing, so it is not "content we cannot round-trip" -- it is
+  // indistinguishable from no settings file at all. `touch`, an interrupted editor save, or
+  // a tool that creates the file before writing to it can all leave this behind, and it is
+  // not something a malformed-settings refusal should apply to.
+
+  it("treats an empty settings file as no settings yet, not malformed", () => {
+    const settings = join(root, "settings.local.json");
+    writeFileSync(settings, "", "utf8");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    const proposals = buildProposals([item("pdf")], fits, new Map());
+
+    expect(() => applyProposals(proposals, settings, store, new Date())).not.toThrow();
+    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides).toEqual({ pdf: "user-invocable-only" });
+  });
+
+  it("treats a whitespace-only settings file as no settings yet, not malformed", () => {
+    const settings = join(root, "settings.local.json");
+    writeFileSync(settings, "  \n", "utf8");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    const proposals = buildProposals([item("pdf")], fits, new Map());
+
+    expect(() => applyProposals(proposals, settings, store, new Date())).not.toThrow();
+    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides).toEqual({ pdf: "user-invocable-only" });
+  });
+
+  it("treats an empty settings file as no settings yet when reverting too", () => {
+    const settings = join(root, "settings.local.json");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    applyProposals(buildProposals([item("pdf")], fits, new Map()), settings, store, new Date());
+    // Something (an editor, another tool) emptied the file between apply and undo.
+    writeFileSync(settings, "", "utf8");
+
+    expect(() => undoLast(store, new Date())).not.toThrow();
+    expect(JSON.parse(readFileSync(settings, "utf8")).skillOverrides).toEqual({});
+  });
+
+  it("still refuses a file with actual unparseable content (boundary against the empty-file fix)", () => {
+    // Pins the boundary the fix above must not cross: content that fails to parse -- as
+    // opposed to no content at all -- must remain refused. This must pass both before and
+    // after the empty-file fix; it is a regression guard, not a red/green test for it.
+    const settings = join(root, "settings.local.json");
+    writeFileSync(settings, "{not valid json", "utf8");
+    const store = new Store(root);
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    const proposals = buildProposals([item("pdf")], fits, new Map());
+
+    expect(() => applyProposals(proposals, settings, store, new Date())).toThrow(MalformedSettingsError);
+  });
+
   it("still applies when the file is a settings object whose skillOverrides value is junk", () => {
     // Distinct from the cases above: the FILE parses as a settings object, so nothing about
     // it is unrecoverable. Only the `skillOverrides` value is unusable, and repairing that

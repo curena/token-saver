@@ -101,12 +101,20 @@ export class MalformedSettingsError extends Error {
  * deliberately from `readOverrides` below, which does fail open -- a junk `skillOverrides`
  * value inside an otherwise valid settings object is exactly what this tool repairs, and
  * rewriting it loses nothing else.
+ *
+ * An empty (or whitespace-only) file is treated the same as an absent one, not as malformed:
+ * it holds nothing, so there is nothing a rewrite would destroy. `touch`, an interrupted
+ * editor save, or a tool that creates the file before writing to it can all leave this
+ * behind, and `JSON.parse` would otherwise reject it as a `SyntaxError` before the malformed
+ * check ever gets to ask whether there was content worth protecting.
  */
 function readSettings(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
+  const content = readFileSync(path, "utf8");
+  if (content.trim() === "") return {};
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = JSON.parse(content);
   } catch {
     throw new MalformedSettingsError(path);
   }
