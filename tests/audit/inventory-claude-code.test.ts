@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -184,5 +184,46 @@ describe("scanClaudeCode", () => {
       settingsPath: join(root, "settings.local.json"),
     });
     expect(items.map((i) => i.id)).toEqual(["pdf"]);
+  });
+
+  // --- real-machine directory shapes ----------------------------------------------
+
+  it("finds a skill reached through a symlinked directory", () => {
+    // `~/.claude/skills/hf-cli -> ../../.agents/skills/hf-cli` is a real shape on a live
+    // machine. `Dirent.isDirectory()` is false for a symlink, so an isDirectory() gate
+    // discards it entirely.
+    writeSkill(join(root, "elsewhere"), "hf-cli", "name: hf-cli\ndescription: Hugging Face CLI");
+    symlinkSync(join(root, "elsewhere", "hf-cli"), join(root, "user", "hf-cli"), "dir");
+    expect(scan().map((i) => i.id)).toEqual(["hf-cli"]);
+  });
+
+  it("finds a skill nested two levels below the skills root", () => {
+    // `~/.claude/skills/synced/<uuid>/<name>/SKILL.md` is the shape skill sync writes. A
+    // flat scan looks for `skills/synced/SKILL.md`, misses, and discards the whole subtree.
+    writeSkill(
+      join(root, "user", "synced", "7f3c-uuid"),
+      "mempalace",
+      "name: mempalace\ndescription: Memory palace",
+    );
+    expect(scan().map((i) => i.id)).toEqual(["mempalace"]);
+  });
+
+  it("stops descending below the bounded depth", () => {
+    writeSkill(join(root, "user", "a", "b", "c"), "too-deep", "name: too-deep\ndescription: Nope");
+    expect(scan()).toHaveLength(0);
+  });
+
+  it("terminates on a symlink cycle instead of recursing forever", () => {
+    // `user/nest/loop` points back at `user`, so an unguarded recursive walk never returns.
+    mkdirSync(join(root, "user", "nest"), { recursive: true });
+    symlinkSync(join(root, "user"), join(root, "user", "nest", "loop"), "dir");
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    expect(scan().map((i) => i.id)).toEqual(["pdf"]);
+  });
+
+  it("prefers a directory's own SKILL.md over recursing into it", () => {
+    writeSkill(join(root, "user"), "pdf", "name: pdf\ndescription: PDFs");
+    writeSkill(join(root, "user", "pdf"), "inner", "name: inner\ndescription: Should not appear");
+    expect(scan().map((i) => i.id)).toEqual(["pdf"]);
   });
 });
