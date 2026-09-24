@@ -1,4 +1,5 @@
 import { score } from "@typesafe-ai/sdk";
+import { redact } from "../redact.js";
 import type { FitLevel, InventoryItem, ProjectProfile } from "../types.js";
 
 export const FIT_BATCH_SIZE = 20;
@@ -42,12 +43,24 @@ export function fitState(profile: ProjectProfile): Record<string, unknown> {
   };
 }
 
+/**
+ * `Jev.ask` redacts `state`, but it does not redact `questions` -- so anything interpolated
+ * into question text must be redacted here, at the call site. `name` and `description` come
+ * verbatim from a SKILL.md on disk, which is exactly the kind of file that ends up holding
+ * a deploy key someone pasted into an example.
+ *
+ * Deliberately NOT done by running `redactDeep` over the built `questions` object: that
+ * rebuilds the SDK's own question objects through `Object.fromEntries(Object.entries(...))`.
+ * It happens to work today, but it couples redaction to an SDK internal -- if `score()` ever
+ * returns a branded class or carries a non-enumerable field, redaction would quietly corrupt
+ * requests, and fail-open would report that as "Jev is down" rather than as a bug here.
+ */
 export function fitQuestions(items: InventoryItem[]): Record<string, ReturnType<typeof score>> {
   const questions: Record<string, ReturnType<typeof score>> = {};
   for (const item of items) {
     questions[`fit::${item.id}`] = score(
-      `An agent working in this project can load a capability called '${item.name}', ` +
-        `described as: ${item.description}. How well does it fit the work this project ` +
+      `An agent working in this project can load a capability called '${redact(item.name)}', ` +
+        `described as: ${redact(item.description)}. How well does it fit the work this project ` +
         `involves, judging from \`readme\`, \`manifests\`, \`file_tree\` and ` +
         "`recent_requests`?",
       CRITERIA,

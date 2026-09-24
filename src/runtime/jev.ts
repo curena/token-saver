@@ -50,6 +50,13 @@ function redactDeep(value: unknown, seen: WeakSet<object> = new WeakSet()): unkn
 /**
  * Deadline-bound, redacting, caching wrapper. Every failure path returns null so
  * callers fall back to a code-only decision.
+ *
+ * REDACTION CONTRACT -- read this before adding a question builder.
+ * `ask` redacts `state`, and ONLY `state`. It does not redact `questions`, because a
+ * question is an SDK-built object rather than plain data, and rebuilding one generically
+ * would couple this module to the SDK's internal shape. Every question builder is therefore
+ * responsible for redacting anything it interpolates into its own question text. See
+ * `fitQuestions` in src/core/questions/fit.ts for the pattern.
  */
 export class Jev {
   private readonly client: JevClient | null;

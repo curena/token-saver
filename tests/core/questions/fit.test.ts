@@ -36,6 +36,27 @@ describe("fit questions", () => {
     expect(Object.keys(fitQuestions(items))).toEqual(["fit::pdf"]);
   });
 
+  it("redacts a secret planted in a skill's description", () => {
+    // Jev.ask redacts `state`, but not `questions` -- and fitQuestions interpolates
+    // attacker-uncontrolled but user-owned text straight from a SKILL.md on disk. The
+    // "redact before every send" constraint has no carve-out for question text.
+    const built = fitQuestions([
+      { ...items[0], description: "Deploys using AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCY" },
+    ]);
+    const text = JSON.stringify(built["fit::pdf"]);
+    expect(text).toContain("[REDACTED]");
+    expect(text).not.toContain("wJalrXUtnFEMIK7MDENGbPxRfiCY");
+  });
+
+  it("redacts a secret planted in a skill's name", () => {
+    const built = fitQuestions([
+      { ...items[0], name: "deploy-sk-abcdefghijklmnopqrstuvwxyz012345" },
+    ]);
+    const text = JSON.stringify(built["fit::pdf"]);
+    expect(text).toContain("[REDACTED]");
+    expect(text).not.toContain("abcdefghijklmnopqrstuvwxyz012345");
+  });
+
   it("gives every level a description that stands on its own", () => {
     // The SDK's Score builder indexes criteria by rubric position (0 = best fit), not by
     // name, so this is a tuple of four descriptions rather than a map.
