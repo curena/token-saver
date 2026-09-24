@@ -9,3 +9,4 @@ export * from "./policy/eligibility.js";
 export * from "./policy/staleness.js";
 export * from "./policy/decide.js";
 export * from "./policy/cost.js";
+export * from "./policy/budget.js";
