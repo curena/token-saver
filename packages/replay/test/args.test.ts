@@ -33,6 +33,24 @@ describe("parseArgs", () => {
     expect(args.targets).toEqual(["s.jsonl"]);
   });
 
+  it("rejects a missing or non-numeric --window", () => {
+    expect(() => parseArgs(["s.jsonl", "--window"])).toThrow(/--window needs a number/);
+    expect(() => parseArgs(["s.jsonl", "--window", "big"])).toThrow(/--window needs a number/);
+    expect(() => parseArgs(["s.jsonl", "--window", ""])).toThrow(/--window needs a number/);
+  });
+
+  it("rejects a non-positive --window", () => {
+    expect(() => parseArgs(["s.jsonl", "--window", "0"])).toThrow(/--window must be > 0/);
+    expect(() => parseArgs(["s.jsonl", "--window", "-5"])).toThrow(/--window must be > 0/);
+  });
+
+  it("rejects a missing, non-numeric or negative --reserve", () => {
+    expect(() => parseArgs(["s.jsonl", "--reserve"])).toThrow(/--reserve needs a number/);
+    expect(() => parseArgs(["s.jsonl", "--reserve", "Infinity"])).toThrow(/--reserve needs a number/);
+    expect(() => parseArgs(["s.jsonl", "--reserve", "-1"])).toThrow(/--reserve must be >= 0/);
+    expect(parseArgs(["s.jsonl", "--reserve", "0"]).reserve).toBe(0);
+  });
+
   it("defaults window to null, reserve to 16384 and models to null", () => {
     const args = parseArgs(["s.jsonl"]);
     expect(args.window).toBeNull();
