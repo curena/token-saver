@@ -57,21 +57,26 @@ describe("replaySession", () => {
   });
 });
 describe("replaySession retention", () => {
-  const config = { ...DEFAULT_CONFIG, minResultTokens: 1, protectTurns: 0, minSaving: 0 };
+  // The fixture's recorded usage is 2,000 / 3,100 / 5,100 tokens at its three
+  // calls. Window 10,000 with highWater 0.5 puts the turn trigger at 5,000 and
+  // the emergency trigger at 8,000, so the only sweep is the turn sweep at the
+  // third call (a turn start), where call_1 is eligible (turnsAgo 1).
+  const config = { ...DEFAULT_CONFIG, minResultTokens: 1, protectTurns: 0, minSaving: 0, highWater: 0.5 };
+  const options = { window: 10_000, reserveTokens: 0 };
   const quoted = "export function login(credentials: Credentials): Session {";
 
   it("does not count uses made while the result was still fully visible", async () => {
     // call_1 is only eligible at the third call (turnsAgo 1); "Now editing" is
     // written at the second call, while the result is still in full.
     const early = jsonl.replace('"text":"Now editing"', `"text":${JSON.stringify(`Now editing ${quoted}`)}`);
-    const metrics = await replaySession(early, "fixture", stale, config, { window: 1_000, reserveTokens: 0 });
+    const metrics = await replaySession(early, "fixture", stale, config, options);
     expect(metrics.stubbed + metrics.partial).toBeGreaterThan(0);
     expect(metrics.misses).toEqual([]);
   });
 
   it("counts uses made after the sweep point", async () => {
     const late = jsonl.replace('"text":"Running"', `"text":${JSON.stringify(`Running ${quoted}`)}`);
-    const metrics = await replaySession(late, "fixture", stale, config, { window: 1_000, reserveTokens: 0 });
+    const metrics = await replaySession(late, "fixture", stale, config, options);
     expect(metrics.misses.some((miss) => miss.resultId === "call_1")).toBe(true);
   });
 });
@@ -171,10 +176,11 @@ describe("replaySession turn trigger fires only at a turn start", () => {
     const metrics = await replaySession(jsonl, "arm-cap-turn", stale, config, options);
     expect(metrics.sweeps).toBe(1);
     expect(metrics.stubbed + metrics.partial).toBe(1);
-    // 15,990 (call_1) + 1 ("ok") + 1 ("b"): only reachable if the sweep landed at
-    // the turn-start call site (tokenCounts includes "ok" and "b"), not the
-    // mid-turn one two messages earlier (which would give 15,990).
-    expect(metrics.rewrittenTokens).toBe(15_992);
+    // call_1 at its post-sweep (stub) size — 15,990 minus its 15,950 saving,
+    // i.e. the 40-token stub overhead — + 1 ("ok") + 1 ("b"): only reachable if
+    // the sweep landed at the turn-start call site (tokenCounts includes "ok"
+    // and "b"), not the mid-turn one two messages earlier (which would give 40).
+    expect(metrics.rewrittenTokens).toBe(42);
   });
 });
 
@@ -251,5 +257,60 @@ describe("replaySession emergency re-arm", () => {
     const metrics = await replaySession(jsonl, "emergency-rearm", stale, config, options);
     expect(metrics.sweeps).toBe(2);
     expect(metrics.stubbed).toBe(2);
+  });
+});
+
+describe("replaySession context from recorded usage", () => {
+  // window 100,000 / reserve 16,384: emergencyBase 81,616, compactionPoint 83,616.
+  // The chars/4 estimate of this session never passes ~2,010 tokens, but the
+  // recorded provider usage (input + cacheRead + cacheWrite, which includes the
+  // system prompt and tool schemas) reaches 85,000 at the last call. pi triggers
+  // on the latter, so replay must too.
+  function line(role: string, content: unknown, extra: Record<string, unknown> = {}): string {
+    return JSON.stringify({ type: "message", id: `e${Math.random()}`, message: { role, content, ...extra } });
+  }
+  const usage = (input: number, cacheRead: number, cacheWrite: number) =>
+    ({ usage: { input, output: 10, cacheRead, cacheWrite } });
+
+  function session(lastUsage: Record<string, unknown>): string {
+    return [
+      line("user", "a"),
+      line("assistant", [{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "f.ts" } }], usage(20_000, 0, 0)),
+      line("toolResult", [{ type: "text", text: "x".repeat(8_000) }], { toolCallId: "call_1", toolName: "read" }), // 2,000 tokens
+      line("user", "b"),
+      line("assistant", "k", usage(1_000, 20_000, 9_000)), // 30,000
+      line("user", "c"),
+      line("assistant", "ok", lastUsage), // call_1 is now turnsAgo 2: eligible for the emergency trigger
+    ].join("\n");
+  }
+
+  const config = { ...DEFAULT_CONFIG, minResultTokens: 1, minSaving: 0 };
+  const options = { window: 100_000, reserveTokens: 16_384 };
+
+  it("triggers on recorded usage, not the estimate, and measures context from it", async () => {
+    const metrics = await replaySession(session(usage(1_000, 80_000, 4_000)), "usage", stale, config, options);
+    expect(metrics.sweeps).toBe(1);
+    expect(metrics.peakBefore).toBe(85_000);
+    expect(metrics.contextSumBefore).toBe(20_000 + 30_000 + 85_000);
+    // call_1 stubbed: 2,000 tokens minus the 40-token stub overhead saved.
+    expect(metrics.peakAfter).toBe(85_000 - 1_960);
+    // 85,000 is past the compaction point; 83,040 is not.
+    expect(metrics.compactionsBefore).toBe(1);
+    expect(metrics.compactionsAfter).toBe(0);
+  });
+
+  it("falls back to the estimate at a call with no recorded usage", async () => {
+    const metrics = await replaySession(session({}), "no-usage", stale, config, options);
+    expect(metrics.sweeps).toBe(0);
+    expect(metrics.peakBefore).toBe(30_000);
+    const estimate = metrics.contextSumBefore - 50_000;
+    expect(estimate).toBeGreaterThan(2_000);
+    expect(estimate).toBeLessThan(2_100);
+  });
+
+  it("falls back to the estimate when recorded usage is zero", async () => {
+    const metrics = await replaySession(session(usage(0, 0, 0)), "zero-usage", stale, config, options);
+    expect(metrics.peakBefore).toBe(30_000);
+    expect(metrics.contextSumBefore - 50_000).toBeLessThan(2_100);
   });
 });

@@ -121,6 +121,11 @@ export function renderReport(runs: TauRun[]): string {
       `${s.stubbed} | ${s.partial} |`,
     );
   }
+  lines.push(
+    "",
+    "Context (ctx) is each call's recorded provider prompt size (input + cache read + cache write), " +
+    "minus savings; a chars/4 estimate where no usage was recorded.",
+  );
   lines.push("", "A miss is an elided chunk whose text the agent later used: it would have cost a recall.");
   lines.push(
     "",

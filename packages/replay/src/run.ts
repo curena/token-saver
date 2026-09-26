@@ -23,7 +23,9 @@ export interface ReplayMetrics {
   misses: Miss[];
   /** The session's context window, or null when it could not be determined (sweeps are skipped). */
   window: number | null;
-  /** Largest simulated context (all message tokens) at any call, without / with token-saver. */
+  /** Largest context at any call, without / with token-saver. The context is the
+   * call's recorded provider usage (input + cacheRead + cacheWrite), or the
+   * chars/4 message estimate when none was recorded; "with" subtracts savings. */
   peakBefore: number;
   peakAfter: number;
   /** Sum of simulated context over all calls; divide by calls for the mean. */
@@ -39,11 +41,30 @@ export interface ReplayOptions {
   reserveTokens: number;
 }
 
-/** T_after (spec §6.1): every message's tokens from `fromIndex` to the end of the context. */
-function suffixTokens(site: CallSite, fromIndex: number): number {
+/**
+ * T_after (spec §6.1): every message's tokens from `fromIndex` to the end of the
+ * context, as re-processed after the sweep — shortened results count at their
+ * post-sweep (stub/partial) size.
+ */
+function suffixTokens(site: CallSite, fromIndex: number, decided: ReadonlyMap<string, Decision>): number {
   let sum = 0;
-  for (let index = fromIndex; index < site.tokenCounts.length; index++) sum += site.tokenCounts[index]!;
+  for (let index = fromIndex; index < site.tokenCounts.length; index++) sum += site.tokenCounts[index] ?? 0;
+  for (const result of site.results) {
+    if (result.messageIndex >= fromIndex) sum -= decided.get(result.id)?.savedTokens ?? 0;
+  }
   return sum;
+}
+
+/**
+ * The context size pi saw at this call: the provider's recorded prompt size,
+ * which includes the system prompt, tool schemas and thinking that the message
+ * estimate misses. Falls back to the estimate when no usage was recorded.
+ */
+function recordedContext(site: CallSite): number {
+  const { input, cacheRead, cacheWrite } = site.usage;
+  const recorded = (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);
+  if (recorded > 0) return recorded;
+  return site.tokenCounts.reduce((sum, tokens) => sum + (tokens ?? 0), 0);
 }
 
 export async function replaySession(
@@ -77,7 +98,7 @@ export async function replaySession(
     const before = site.results.reduce((sum, result) => sum + result.tokens, 0);
     metrics.tokensBefore += before;
 
-    const contextBefore = site.tokenCounts.reduce((sum, tokens) => sum + (tokens ?? 0), 0);
+    const contextBefore = recordedContext(site);
     const savedSoFar = site.results.reduce((sum, result) => sum + (decided.get(result.id)?.savedTokens ?? 0), 0);
     let contextAfter = contextBefore - savedSoFar;
 
@@ -132,10 +153,10 @@ export async function replaySession(
 
         if (outcome.decisions.length > 0) {
           metrics.sweeps++;
-          metrics.rewrittenTokens += suffixTokens(site, outcome.fromIndex);
+          for (const decision of outcome.decisions) decided.set(decision.id, decision);
+          metrics.rewrittenTokens += suffixTokens(site, outcome.fromIndex, decided);
 
           for (const decision of outcome.decisions) {
-            decided.set(decision.id, decision);
             if (decision.level === "stub") metrics.stubbed++;
             if (decision.level === "partial") metrics.partial++;
 
