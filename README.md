@@ -54,7 +54,7 @@ Measure savings and misses against recorded pi sessions without a live session:
 npx tsx packages/replay/src/cli.ts ~/.pi/agent/sessions --tau 0.1,0.3 --report out/
 ```
 
-`<sessions...>` may be a directory (walked for `.jsonl`) or individual files. The run writes `out/report.md` and `out/metrics.json`, caching Jev answers in `out/jev-cache.json` so re-runs are free. Real sessions need `TYPESAFE_API_KEY`; the test fixture runs offline because its results sit below the sweep floor:
+`<sessions...>` may be a directory (walked for `.jsonl`) or individual files. The run writes `out/report.md` and `out/metrics.json`, caching Jev answers in `out/jev-cache.json` so re-runs are free. Context size at each call is the session's recorded provider usage (input + cache read + cache write), or a chars/4 estimate where a call recorded none. Real sessions need `TYPESAFE_API_KEY`; the test fixture runs offline because its results sit below the sweep floor:
 
 ```bash
 npx tsx packages/replay/src/cli.ts packages/replay/test/fixtures/session.jsonl --tau 0.1,0.3 --report out/

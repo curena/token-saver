@@ -105,22 +105,29 @@ reports context size directly (peak/mean tokens, sweeps, re-processed tokens, co
 instead of a cost gate pass/fail. This run measures the local Qwen (llama.cpp) sessions
 against those triggers.
 
+Context at each call is now the call's recorded provider usage (input + cacheRead +
+cacheWrite) minus the savings applied so far, falling back to a chars/4 message estimate only
+where a call recorded no usage. That is what pi's `getContextUsage()` reports and what the
+triggers compare against. The first run of this section reported a 12,653-token peak; that
+was the chars/4 estimate of message text alone, which misses the system prompt, tool schemas
+and thinking, and understated context about 4x. The numbers below replace it.
+
 ```bash
-mkdir -p out/qwen-budget && cp out/representative-v2/jev-cache.json out/qwen-budget/
+mkdir -p out/qwen-budget-v2 && cp out/qwen-budget/jev-cache.json out/qwen-budget-v2/
 S=~/.pi/agent/sessions
 npx tsx packages/replay/src/cli.ts "$S/--home-archie--" "$S/--data-llama.cpp-adaptive-kv-streaming--" \
   "$S/--data-tools-ASCII-Condensed-prune-tools--" "$S/--home-archie-workspace-test--" "$S/--tmp-tmp.o1bhmBmKQB-repo--" \
-  --window 100000 --tau 0.3 --report out/qwen-budget
+  --window 100000 --tau 0.3 --report out/qwen-budget-v2
 ```
 
-24 session files (`--home-archie--` 15, `--data-llama.cpp-adaptive-kv-streaming--` 6,
+24 session files, 141 model calls (`--home-archie--` 15, `--data-llama.cpp-adaptive-kv-streaming--` 6,
 `--data-tools-ASCII-Condensed-prune-tools--` 1, `--home-archie-workspace-test--` 1,
 `--tmp-tmp.o1bhmBmKQB-repo--` 1), forced to a 100,000-token window with `--window` since
 these are local llama.cpp sessions with no entry in `models-store.json`.
 
 | tau | peak ctx before | peak ctx after | mean ctx before | mean ctx after | sweeps | re-processed | compactions before | compactions after | misses | jev reqs | jev $ | net $ | tokens before | tokens after | saved | stubbed | partial |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0.3 | 12,653 | 12,653 | 3,873 | 3,873 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0000 | 0.0000 | 297,639 | 297,639 | 0.0% | 0 | 0 |
+| 0.3 | 49,052 | 49,052 | 17,928 | 17,928 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0000 | 0.0000 | 297,639 | 297,639 | 0.0% | 0 | 0 |
 
 The DeepSeek/hoard run (`--home-archie-workspace-hoard--`, window looked up from
 `models-store.json` rather than forced) is pending the user's go-ahead, since it makes paid
@@ -133,18 +140,16 @@ npx tsx packages/replay/src/cli.ts "$S/--home-archie-workspace-hoard--" --tau 0.
 
 What the numbers say:
 
-- **No reduction at all on the Qwen sessions: peak and mean context are identical before and
-  after (12,653 / 3,873 tokens).** The triggers never fired, so there was nothing to reduce.
-- **Zero sweeps, zero re-processed tokens, across all 24 session files.** There is no
-  per-sweep re-processing cost to report here because no sweep ever ran.
-- **Zero compactions before and after — none avoided, because none ever happened.** These
-  sessions never grew large enough to need pi's compaction in the first place, so this run
-  can't show whether token-saver prevents it.
-- **Zero misses**, consistent with zero sweeps — there is nothing elided that could be missed.
-- **Token-saver's context-budget triggers barely matter on these sessions, and that's the
-  honest finding.** The peak context reached across all 24 files was 12,653 of a 100,000-token
-  window (12.7%) — 0 of 24 sessions ever passed `highWater` (75,000 tokens, 75%), let alone the
-  emergency level (~81,616 tokens, 81.6%, from `contextLevel` 0.85 capped by `reserveTokens`
-  16,384 and the 2,000-token compaction margin). Local Qwen sessions with a 100k window simply
-  never fill it; this replay says nothing yet about whether the triggers help on the user's
-  real (DeepSeek/hoard) sessions, which is what the pending run above should show.
+- **The triggers never fired on the Qwen sessions, so peak and mean context are unchanged
+  (49,052 / 17,928 tokens).** The largest session (`--data-llama.cpp-adaptive-kv-streaming--`,
+  41 calls) peaked at 49,052 tokens, 49% of the 100,000-token window.
+- **0 of 24 sessions reached `highWater`** (75,000 tokens), let alone the emergency level
+  (81,616 tokens: `contextLevel` 0.85 capped by `reserveTokens` 16,384 and the 2,000-token
+  compaction margin). With recorded usage the sessions are about 4x larger than the earlier
+  estimate showed, but still well short of the triggers.
+- **Zero sweeps, zero re-processed tokens, zero misses, zero Jev requests.** Nothing was
+  shortened, so there is no waiting cost and nothing elided that could be missed.
+- **Zero compactions before and after.** No session crossed pi's compaction point (83,616),
+  so this run cannot show whether token-saver prevents compaction.
+- This run says nothing about the user's real DeepSeek/hoard sessions, which are the ones
+  expected to fill the window; the pending run above is what should show that.
