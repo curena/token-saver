@@ -124,7 +124,10 @@ export async function replaySession(
         // Capped at the emergency base / compaction point, not Infinity: see the
         // note on turnArmAt/emergencyArmAt above.
         turnArmAt = nextArmAt(outcome.reached, window, config, turnBase, emergencyBase);
-        emergencyArmAt = nextArmAt(outcome.reached, window, config, emergencyBase, compactionPoint);
+        // Spec §2.1: the emergency trigger re-arms only after it fires itself.
+        if (trigger === "context") {
+          emergencyArmAt = nextArmAt(outcome.reached, window, config, emergencyBase, compactionPoint);
+        }
         contextAfter = outcome.reached;
 
         if (outcome.decisions.length > 0) {

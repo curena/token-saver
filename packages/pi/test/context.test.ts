@@ -281,6 +281,27 @@ describe("handleContext triggers", () => {
     expect(again.idle).toBe("below-level");
   });
 
+  it("a turn sweep that falls short leaves the emergency trigger at its base", async () => {
+    // Spec §2.1: the emergency trigger re-arms only after it fires itself.
+    const out = await handleContext(input({ messages: atTurnStart(), usage: { tokens: 76_000, window: WINDOW } }));
+    expect(out.trigger).toBe("turn");
+    expect(out.sweep!.reached).toBeGreaterThan(DEFAULT_CONFIG.lowWater * WINDOW);
+    expect(out.arming.emergencyArmAt ?? EMERGENCY_BASE).toBe(EMERGENCY_BASE);
+
+    // Mid-run, at the emergency base: the emergency sweep still fires.
+    const midRun = await handleContext(input({
+      usage: { tokens: EMERGENCY_BASE, window: WINDOW }, arming: out.arming,
+    }));
+    expect(midRun.idle).toBeNull();
+    expect(midRun.sweep).not.toBeNull();
+  });
+
+  it("an emergency sweep that falls short re-arms the emergency trigger", async () => {
+    const out = await handleContext(input({ usage: { tokens: 85_000, window: WINDOW } }));
+    expect(out.trigger).toBe("context");
+    expect(out.arming.emergencyArmAt).toBeGreaterThan(EMERGENCY_BASE);
+  });
+
   it("caps the turn re-arm point at the emergency base, so a later turn start can still sweep", async () => {
     // Mid-run, above the emergency base, with nothing eligible enough to reach
     // the target: the "context" trigger fires but falls short.

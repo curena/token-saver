@@ -205,7 +205,8 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
 
   // The first context of a turn ends with the user's message; mid-run ones end
   // with a tool result. Sweeping only there puts the re-processing wait where
-  // the user already expects a pause.
+  // the user already expects a pause. A queued/steering user message sent
+  // mid-run also ends the context with role "user", so it counts as a turn start.
   const atTurnStart = input.messages.at(-1)?.role === "user";
   const trigger: "turn" | "context" | null =
     tokens >= emergencyArmAt ? "context" : atTurnStart && tokens >= turnArmAt ? "turn" : null;
@@ -257,7 +258,11 @@ export async function handleContext(input: HandleInput): Promise<HandleOutput> {
       // short must not be able to re-arm past the point the emergency trigger
       // would fire anyway.
       turnArmAt: nextArmAt(outcome.reached, window, config, turnBase, emergencyBase),
-      emergencyArmAt: nextArmAt(outcome.reached, window, config, emergencyBase, compactionPoint),
+      // Spec §2.1: the emergency trigger re-arms only after it fires itself; a
+      // turn sweep that falls short must not push it toward the compaction point.
+      emergencyArmAt: trigger === "context"
+        ? nextArmAt(outcome.reached, window, config, emergencyBase, compactionPoint)
+        : arming.emergencyArmAt,
     },
     idle: null,
   };

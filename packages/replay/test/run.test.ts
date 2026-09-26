@@ -212,3 +212,44 @@ describe("replaySession compaction counters", () => {
     expect(metrics.compactionsAfter).toBe(0);
   });
 });
+
+describe("replaySession emergency re-arm", () => {
+  // window 100,000 / reserve 16,384: turnBase 75,000, emergencyBase 81,616,
+  // compactionPoint 83,616, lowWater 30,000. No recorded usage, so the context
+  // is the chars/4 estimate.
+  //  - call_1 (2,000 tokens, turn 1) is the only result a turn sweep may take
+  //    at turn 4 (protectTurns 2: turnsAgo > 2); call_2 (8,000 tokens, turn 2)
+  //    is eligible only for the emergency trigger (turnsAgo > 1).
+  //  - Turn 4 starts at ~76,012: the turn sweep stubs call_1 and falls short
+  //    (~74,0xx). Spec §2.1: that must not re-arm the emergency trigger.
+  //  - Mid-run, call_3 (8,000 tokens) lands the context at ~82,0xx: above the
+  //    emergency base, below where a wrongly re-armed emergencyArmAt (83,616)
+  //    would sit. The emergency sweep must fire and take call_2.
+  function line(role: string, content: unknown, extra: Record<string, unknown> = {}): string {
+    return JSON.stringify({ type: "message", id: `e${Math.random()}`, message: { role, content, ...extra } });
+  }
+
+  const jsonl = [
+    line("user", "a"),
+    line("assistant", [{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "f.ts" } }]),
+    line("toolResult", [{ type: "text", text: "x".repeat(8_000) }], { toolCallId: "call_1", toolName: "read" }),
+    line("user", "b"),
+    line("assistant", [{ type: "toolCall", id: "call_2", name: "read", arguments: { path: "g.ts" } }]),
+    line("toolResult", [{ type: "text", text: "x".repeat(32_000) }], { toolCallId: "call_2", toolName: "read" }),
+    line("user", "b2"),
+    line("assistant", [{ type: "text", text: "y".repeat(264_000) }]), // 66,000 tokens of assistant output
+    line("user", "c"),
+    line("assistant", [{ type: "text", text: "ok" }, { type: "toolCall", id: "call_3", name: "bash", arguments: { command: "ls" } }]), // turn-start site
+    line("toolResult", [{ type: "text", text: "x".repeat(32_000) }], { toolCallId: "call_3", toolName: "bash" }),
+    line("assistant", [{ type: "text", text: "done" }]), // mid-run site
+  ].join("\n");
+
+  const config = { ...DEFAULT_CONFIG, minResultTokens: 1, minSaving: 0 };
+  const options = { window: 100_000, reserveTokens: 16_384 };
+
+  it("a short turn sweep leaves the emergency trigger at its base, so a later mid-run call fires it", async () => {
+    const metrics = await replaySession(jsonl, "emergency-rearm", stale, config, options);
+    expect(metrics.sweeps).toBe(2);
+    expect(metrics.stubbed).toBe(2);
+  });
+});
