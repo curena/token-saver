@@ -19,6 +19,14 @@ export interface Summary {
   rewrittenTokens: number;
   sweepMs: number;
   netUsd: number;
+  peakBefore: number;
+  peakAfter: number;
+  meanBefore: number;
+  meanAfter: number;
+  compactionsBefore: number;
+  compactionsAfter: number;
+  reprocessedTokens: number;
+  skippedSessions: number;
 }
 
 export const JEV_PRICE_PER_TOKEN = 0.042 / 1e6;
@@ -57,6 +65,15 @@ export function summarize(all: ReplayMetrics[], prices: Prices = DEFAULT_PRICES)
     total.rewrittenTokens * prices.cacheWrite -
     jevUsd;
 
+  const calls = all.reduce((sum, m) => sum + m.calls, 0);
+  const peakBefore = Math.max(0, ...all.map((m) => m.peakBefore));
+  const peakAfter = Math.max(0, ...all.map((m) => m.peakAfter));
+  const meanBefore = calls === 0 ? 0 : all.reduce((s, m) => s + m.contextSumBefore, 0) / calls;
+  const meanAfter = calls === 0 ? 0 : all.reduce((s, m) => s + m.contextSumAfter, 0) / calls;
+  const compactionsBefore = all.reduce((s, m) => s + m.compactionsBefore, 0);
+  const compactionsAfter = all.reduce((s, m) => s + m.compactionsAfter, 0);
+  const skippedSessions = all.filter((m) => m.window === null).length;
+
   return {
     tokensBefore: total.tokensBefore,
     tokensAfter: total.tokensAfter,
@@ -70,25 +87,47 @@ export function summarize(all: ReplayMetrics[], prices: Prices = DEFAULT_PRICES)
     rewrittenTokens: total.rewrittenTokens,
     sweepMs: total.sweepMs,
     netUsd,
+    peakBefore,
+    peakAfter,
+    meanBefore,
+    meanAfter,
+    compactionsBefore,
+    compactionsAfter,
+    reprocessedTokens: total.rewrittenTokens,
+    skippedSessions,
   };
 }
 
 export function renderReport(runs: TauRun[]): string {
+  const round = (n: number): string => Math.round(n).toLocaleString("en-US");
   const lines = [
     "# token-saver replay",
     "",
-    "| tau | tokens before | tokens after | saved | sweeps | stubbed | partial | misses | jev reqs | jev $ | net $ |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| tau | peak ctx before | peak ctx after | mean ctx before | mean ctx after | sweeps | re-processed | " +
+    "compactions before | compactions after | misses | jev reqs | jev $ | net $ | tokens before | tokens after | saved | stubbed | partial |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
   ];
+  // Every tau replays the same sessions, so the skipped count is the same for
+  // each run; summing across taus would multiply-count the same sessions.
+  let skippedSessions = 0;
   for (const run of runs) {
     const s = summarize(run.metrics);
+    skippedSessions = s.skippedSessions;
     lines.push(
-      `| ${run.tau} | ${s.tokensBefore.toLocaleString("en-US")} | ${s.tokensAfter.toLocaleString("en-US")} | ` +
-      `${s.savedPct.toFixed(1)}% | ${s.sweeps} | ${s.stubbed} | ${s.partial} | ${s.misses} | ` +
-      `${s.jevRequests} | ${s.jevUsd.toFixed(4)} | ${s.netUsd.toFixed(4)} |`,
+      `| ${run.tau} | ${round(s.peakBefore)} | ${round(s.peakAfter)} | ` +
+      `${round(s.meanBefore)} | ${round(s.meanAfter)} | ${s.sweeps} | ${round(s.reprocessedTokens)} | ` +
+      `${s.compactionsBefore} | ${s.compactionsAfter} | ${s.misses} | ${s.jevRequests} | ${s.jevUsd.toFixed(4)} | ` +
+      `${s.netUsd.toFixed(4)} | ${round(s.tokensBefore)} | ${round(s.tokensAfter)} | ${s.savedPct.toFixed(1)}% | ` +
+      `${s.stubbed} | ${s.partial} |`,
     );
   }
   lines.push("", "A miss is an elided chunk whose text the agent later used: it would have cost a recall.");
-  lines.push("", "Net $ is cache reads avoided minus cache writes paid minus Jev spend, at Anthropic prices.");
+  lines.push(
+    "",
+    "Re-processed is the tokens prompt-processed again after sweeps: the waiting cost. Net $ is secondary.",
+  );
+  if (skippedSessions > 0) {
+    lines.push("", `${skippedSessions} session(s) skipped: unknown context window (pass --window).`);
+  }
   return lines.join("\n");
 }

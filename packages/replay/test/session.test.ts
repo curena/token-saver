@@ -111,6 +111,19 @@ describe("parseSession token accounting and task state", () => {
   });
 });
 
+describe("turn starts", () => {
+  it("marks the first call after a user message", () => {
+    const lines = [
+      { type: "message", id: "1", message: { role: "user", content: "go" } },
+      { type: "message", id: "2", message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "a.ts" } }] } },
+      { type: "message", id: "3", message: { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "x" }] } },
+      { type: "message", id: "4", message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
+    ].map((line) => JSON.stringify(line)).join("\n");
+    const sites = parseSession(lines);
+    expect(sites.map((site) => site.atTurnStart)).toEqual([true, false]);
+  });
+});
+
 describe("parseSession touch details", () => {
   const session = [
     line("user", "look"),

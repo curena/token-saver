@@ -27,6 +27,8 @@ export interface CallSite {
   usage: { input: number; cacheRead: number; cacheWrite: number; output: number };
   /** Estimated tokens of every message seen so far, keyed by messageIndex (index 0 unused). */
   tokenCounts: number[];
+  /** The previous message is the user's: pi's turn trigger can fire here. */
+  atTurnStart: boolean;
 }
 
 const TOUCH_KIND: Record<string, FileTouch["kind"]> = { read: "read", edit: "edit", write: "write" };
@@ -82,10 +84,12 @@ export function parseSession(jsonl: string): CallSite[] {
   let userTurn = 0;
   let latestAssistantText = "";
   let messageIndex = 0;
+  let previousRole = "";
 
   for (const entry of entries) {
     if (entry.type !== "message" || entry.message === undefined) continue;
     const message = entry.message;
+    const atTurnStart = previousRole === "user";
     messageIndex++;
     const messageTokens = estimateTokens(contextTextOf(message.content));
 
@@ -94,6 +98,7 @@ export function parseSession(jsonl: string): CallSite[] {
     if (message.role === "user") {
       userTurn++;
       userMessages.push(textOf(message.content));
+      previousRole = message.role;
       continue;
     }
 
@@ -114,10 +119,14 @@ export function parseSession(jsonl: string): CallSite[] {
         turnsAgo: 0, // filled per call site below
         isError: message.isError === true,
       });
+      previousRole = message.role;
       continue;
     }
 
-    if (message.role !== "assistant") continue;
+    if (message.role !== "assistant") {
+      previousRole = message.role;
+      continue;
+    }
 
     // A call site is the context as it stood when the model was asked to produce
     // THIS message, so it is recorded before this message's own tool calls are.
@@ -139,11 +148,13 @@ export function parseSession(jsonl: string): CallSite[] {
       model: message.model ?? "unknown",
       usage: message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       tokenCounts: [...tokenCounts],
+      atTurnStart,
     });
 
     // Only now does this message join the context seen by later calls.
     tokenCounts[messageIndex] = messageTokens;
     latestAssistantText = textOf(message.content) || latestAssistantText;
+    previousRole = message.role;
 
     for (const block of Array.isArray(message.content) ? message.content : []) {
       const call = block as { type?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
