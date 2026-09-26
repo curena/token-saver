@@ -1,8 +1,9 @@
 # Replay baseline
 
-**Status: re-run (2026-09-23) after the PR #1 review fixes — token-saver no longer sweeps
-these sessions at all. See "Re-run after review fixes". The 2026-09-18 numbers below are
-kept for history but were inflated by an underestimated rewrite cost.**
+**Status: context-budget run (2026-09-25) — see "Context-budget run (2026-09-25)" below for
+the current numbers against the turn/emergency triggers. The 2026-09-23 re-run and 2026-09-18
+numbers are kept for history: they measured the old dollar cost gate, since replaced by the
+context-budget triggers.**
 
 ## The first run was contaminated — discarded
 
@@ -95,3 +96,55 @@ user's real model prices via `ctx.model.cost`) and the context-window metric, no
 
 **Keep-threshold decision: leave `keepThreshold` at the spec default 0.3.** This data
 does not justify a change; the open question is the pricing model, not τ.
+
+## Context-budget run (2026-09-25)
+
+After Tasks 1-5 replaced the dollar cost gate with the turn/emergency context-budget
+triggers (`highWater` 0.75, `contextLevel` 0.85, `lowWater` 0.30), the replay harness now
+reports context size directly (peak/mean tokens, sweeps, re-processed tokens, compactions)
+instead of a cost gate pass/fail. This run measures the local Qwen (llama.cpp) sessions
+against those triggers.
+
+```bash
+mkdir -p out/qwen-budget && cp out/representative-v2/jev-cache.json out/qwen-budget/
+S=~/.pi/agent/sessions
+npx tsx packages/replay/src/cli.ts "$S/--home-archie--" "$S/--data-llama.cpp-adaptive-kv-streaming--" \
+  "$S/--data-tools-ASCII-Condensed-prune-tools--" "$S/--home-archie-workspace-test--" "$S/--tmp-tmp.o1bhmBmKQB-repo--" \
+  --window 100000 --tau 0.3 --report out/qwen-budget
+```
+
+24 session files (`--home-archie--` 15, `--data-llama.cpp-adaptive-kv-streaming--` 6,
+`--data-tools-ASCII-Condensed-prune-tools--` 1, `--home-archie-workspace-test--` 1,
+`--tmp-tmp.o1bhmBmKQB-repo--` 1), forced to a 100,000-token window with `--window` since
+these are local llama.cpp sessions with no entry in `models-store.json`.
+
+| tau | peak ctx before | peak ctx after | mean ctx before | mean ctx after | sweeps | re-processed | compactions before | compactions after | misses | jev reqs | jev $ | net $ | tokens before | tokens after | saved | stubbed | partial |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.3 | 12,653 | 12,653 | 3,873 | 3,873 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0000 | 0.0000 | 297,639 | 297,639 | 0.0% | 0 | 0 |
+
+The DeepSeek/hoard run (`--home-archie-workspace-hoard--`, window looked up from
+`models-store.json` rather than forced) is pending the user's go-ahead, since it makes paid
+Jev calls:
+
+```bash
+mkdir -p out/deepseek-budget && cp out/representative-v2/jev-cache.json out/deepseek-budget/
+npx tsx packages/replay/src/cli.ts "$S/--home-archie-workspace-hoard--" --tau 0.3 --report out/deepseek-budget
+```
+
+What the numbers say:
+
+- **No reduction at all on the Qwen sessions: peak and mean context are identical before and
+  after (12,653 / 3,873 tokens).** The triggers never fired, so there was nothing to reduce.
+- **Zero sweeps, zero re-processed tokens, across all 24 session files.** There is no
+  per-sweep re-processing cost to report here because no sweep ever ran.
+- **Zero compactions before and after — none avoided, because none ever happened.** These
+  sessions never grew large enough to need pi's compaction in the first place, so this run
+  can't show whether token-saver prevents it.
+- **Zero misses**, consistent with zero sweeps — there is nothing elided that could be missed.
+- **Token-saver's context-budget triggers barely matter on these sessions, and that's the
+  honest finding.** The peak context reached across all 24 files was 12,653 of a 100,000-token
+  window (12.7%) — 0 of 24 sessions ever passed `highWater` (75,000 tokens, 75%), let alone the
+  emergency level (~81,616 tokens, 81.6%, from `contextLevel` 0.85 capped by `reserveTokens`
+  16,384 and the 2,000-token compaction margin). Local Qwen sessions with a 100k window simply
+  never fill it; this replay says nothing yet about whether the triggers help on the user's
+  real (DeepSeek/hoard) sessions, which is what the pending run above should show.

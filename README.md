@@ -30,8 +30,9 @@ Settings are read from `~/.pi/token-saver.json`, then `.pi/token-saver.json` in 
 | `keepThreshold` (τ) | 0.3 | Chunks at or above this are kept verbatim |
 | `leaveAloneRatio` | 0.7 | Keeping this share of tokens means leaving the result alone |
 | `minSaving` | 500 | Below this saving, make no change |
-| `costMargin` | 1.5 | Required ratio of value to cache cost |
-| `contextLevel` | 0.60 | Forced-sweep level |
+| `contextLevel` | 0.85 | Emergency sweep level (capped just below pi's compaction point) |
+| `highWater` | 0.75 | Sweep at your next message once context passes this fraction of the window |
+| `lowWater` | 0.30 | Sweep target, as a fraction of the window |
 | `expectedSaveRatio` (r) | 0.5 | Assumed saving before Jev answers |
 | `jevBudgetMs` | 1500 | Over budget, abandon the sweep |
 | `jevModel` | `jev-1.13.0` | Pinned; thresholds are tuned per model version |
@@ -59,6 +60,18 @@ npx tsx packages/replay/src/cli.ts ~/.pi/agent/sessions --tau 0.1,0.3 --report o
 npx tsx packages/replay/src/cli.ts packages/replay/test/fixtures/session.jsonl --tau 0.1,0.3 --report out/
 ```
 
+Extra flags:
+
+- `--window <tokens>` — context window for every session; otherwise looked up from `~/.pi/agent/models-store.json`
+- `--reserve <tokens>` — pi's `compaction.reserveTokens` (default 16384)
+- `--models <path>` — path to the models-store.json used for the `--window` lookup
+
+For local sessions with a known window (e.g. a llama.cpp server), pass `--window` directly:
+
+```bash
+npx tsx packages/replay/src/cli.ts ~/.pi/agent/sessions/--home-archie-- --window 100000 --tau 0.3 --report out/qwen-budget
+```
+
 ## How it works
 
-At each model call the extension operates on pi's rebuilt context, finds large tool results outside the protection window, and asks Jev to score each chunk of each one. A cost check decides per result whether to keep it, stub it, or keep only the still-relevant chunks; decisions are cached and immutable, and everything fails open (no key, no prices, or no budget means leave the context alone). The sweep decision is recorded as a display-only transcript entry, while the original text stays in the session file and is recovered through `recall`. Full detail, including the retained-chunk Jev model and the cost gate, is in [`docs/superpowers/specs/2026-09-17-token-saver-g-design.md`](docs/superpowers/specs/2026-09-17-token-saver-g-design.md).
+The extension watches context usage against two triggers: a turn trigger that sweeps at your next message once usage passes `highWater`, and an emergency trigger that can sweep mid-turn as usage nears `contextLevel`. Once triggered, it operates on pi's rebuilt context, finds large tool results outside the protection window, and asks Jev to score each chunk of each one, stubbing or partially keeping results to reach the `lowWater` token target; decisions are cached and immutable, and everything fails open (no key, no context-window size, or no candidates means leave the context alone). The sweep decision is recorded as a display-only transcript entry, while the original text stays in the session file and is recovered through `recall`. Full detail, including the retained-chunk Jev model, is in [`docs/superpowers/specs/2026-09-17-token-saver-g-design.md`](docs/superpowers/specs/2026-09-17-token-saver-g-design.md).
