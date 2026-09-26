@@ -5,7 +5,7 @@ import type { Config, SweepEntryData } from "@token-saver/core";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { handleContext } from "./context.js";
-import type { Arming, HandleOutput, PiMessage } from "./context.js";
+import type { Arming, PiMessage } from "./context.js";
 import { readReserveTokens } from "./settings.js";
 import { sdkClient } from "./jev.js";
 import { recall, sessionSource } from "./recall.js";
@@ -29,8 +29,9 @@ export default function extension(pi: any) {
     join(process.cwd(), ".pi", "settings.json"),
   ]);
   let arming: Arming = { turnArmAt: null, emergencyArmAt: null };
-  let lastIdle: HandleOutput["idle"] = null;
   let lastUsage: { tokens: number; window: number } | null = null;
+  // Why lastUsage is null, for /token-saver.
+  let usageNote = "context size unknown until the next response";
   let jevTokens = 0;
   let recalls = 0;
 
@@ -63,6 +64,11 @@ export default function extension(pi: any) {
         ? { tokens: raw.tokens, window: raw.contextWindow }
         : null;
     lastUsage = usage;
+    // pi reports null tokens right after compaction, until the next response.
+    const windowKnown = raw && typeof raw.contextWindow === "number" && raw.contextWindow > 0;
+    usageNote = windowKnown
+      ? "context size unknown until the next response"
+      : "context window unknown, not sweeping";
 
     const outcome = await handleContext({
       messages: event.messages as PiMessage[],
@@ -76,7 +82,6 @@ export default function extension(pi: any) {
     });
 
     arming = outcome.arming;
-    lastIdle = outcome.idle;
     if (outcome.sweep !== null) jevTokens += outcome.sweep.jevInputTokens;
 
     if (outcome.sweep !== null && outcome.sweep.decisions.length > 0 && outcome.trigger !== null) {
@@ -149,7 +154,7 @@ export default function extension(pi: any) {
       }
       const stats = store.stats();
       const k = (n: number) => `${(n / 1000).toFixed(1)}k`;
-      let levels = "context size unknown (no sweeps)";
+      let levels = usageNote;
       if (lastUsage !== null) {
         const { tokens, window } = lastUsage;
         const turnAt = arming.turnArmAt ?? turnLevel(window, reserveTokens, config) * window;
@@ -162,7 +167,7 @@ export default function extension(pi: any) {
         `token-saver: ${levels}. ${stats.stubbed} stubbed, ${stats.partial} partial, ` +
         `~${k(stats.savedTokens)} tokens freed, ${recalls} recalls, ` +
         `jev spend ~$${(jevTokens * JEV_PRICE_PER_TOKEN).toFixed(4)}` +
-        (lastIdle === "disabled" ? " (off)" : ""),
+        (client === null ? " (TYPESAFE_API_KEY not set)" : !config.enabled ? " (off)" : ""),
         "info",
       );
     },

@@ -67,3 +67,45 @@ describe("/token-saver restore", () => {
     expect(h.ctx.ui.notify).toHaveBeenLastCalledWith("token-saver has no decision for nope", "info");
   });
 });
+
+describe("/token-saver status", () => {
+  let extension: (pi: any) => void;
+  beforeAll(async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "");
+    extension = (await import("../src/index.js")).default;
+  });
+
+  const lastNotice = (h: ReturnType<typeof harness>): string => h.ctx.ui.notify.mock.lastCall![0] as string;
+
+  it("says the API key is missing rather than off", async () => {
+    const h = harness();
+    extension(h.pi);
+    await h.handlers.get("session_start")!({}, h.ctx);
+    await h.context();
+    await h.commands.get("token-saver")!.handler("", h.ctx);
+    expect(lastNotice(h)).toMatch(/TYPESAFE_API_KEY not set/);
+    expect(lastNotice(h)).not.toMatch(/\(off\)/);
+  });
+
+  it("says the size is unknown until the next response when pi reports no tokens", async () => {
+    const h = harness();
+    // Right after compaction pi knows the window but not the token count.
+    h.ctx.getContextUsage = () => ({ tokens: null, contextWindow: 100_000, percent: null }) as any;
+    extension(h.pi);
+    await h.handlers.get("session_start")!({}, h.ctx);
+    await h.context();
+    await h.commands.get("token-saver")!.handler("", h.ctx);
+    expect(lastNotice(h)).toMatch(/context size unknown until the next response/);
+    expect(lastNotice(h)).not.toMatch(/no sweeps/);
+  });
+
+  it("says when the context window is unknown", async () => {
+    const h = harness();
+    h.ctx.getContextUsage = () => undefined as any;
+    extension(h.pi);
+    await h.handlers.get("session_start")!({}, h.ctx);
+    await h.context();
+    await h.commands.get("token-saver")!.handler("", h.ctx);
+    expect(lastNotice(h)).toMatch(/context window unknown/);
+  });
+});
