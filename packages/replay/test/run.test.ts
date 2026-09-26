@@ -135,3 +135,80 @@ describe("replaySession budget metrics", () => {
     if (metrics.sweeps > 0) expect(metrics.rewrittenTokens).toBeGreaterThan(0);
   });
 });
+
+describe("replaySession turn trigger fires only at a turn start", () => {
+  // window 20,000 / reserve 0 gives DISTINCT levels (unlike the 1,000/2,000-window
+  // tests above, where emergencyLevel <= 0 collapses turnBase === emergencyBase and
+  // every sweep fires via "context"):
+  //   turnBase = 15,000   emergencyBase = 17,000   compactionPoint = 20,000
+  // call_1 (15,990 tokens) is the only eligible candidate. Its result lands the
+  // context at 15,995-15,997 for two call sites: one mid-turn (not a turn start,
+  // context in [turnBase, emergencyBase)) and one at the next turn's start. Only
+  // the turn-start call site may fire a trigger here (context needs >= 17,000,
+  // never reached); if the turn check ever fired without atTurnStart, the
+  // mid-turn call would sweep first, at a call site whose tokenCounts snapshot
+  // is two messages shorter, producing a smaller (and distinguishably wrong)
+  // rewrittenTokens (15,990 instead of 15,992 - see below).
+  function line(role: string, content: unknown, extra: Record<string, unknown> = {}): string {
+    return JSON.stringify({ type: "message", id: `e${Math.random()}`, message: { role, content, ...extra } });
+  }
+
+  const bigResult = "x".repeat(63960); // 15,990 tokens
+
+  const jsonl = [
+    line("user", "a"), // 1 token
+    line("assistant", [{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "f.ts" } }]), // 4 tokens
+    line("toolResult", [{ type: "text", text: bigResult }], { toolCallId: "call_1", toolName: "read" }),
+    line("assistant", "ok"), // 1 token; mid-turn call site (not a turn start): ctx before = 15,995
+    line("user", "b"), // 1 token
+    line("assistant", "done"), // turn-start call site: ctx before = 15,997
+  ].join("\n");
+
+  const config = { ...DEFAULT_CONFIG, minResultTokens: 1, protectTurns: 0, minSaving: 0 };
+  const options = { window: 20_000, reserveTokens: 0 };
+
+  it("sweeps once, at the turn-start call site, not the earlier mid-turn one", async () => {
+    const metrics = await replaySession(jsonl, "arm-cap-turn", stale, config, options);
+    expect(metrics.sweeps).toBe(1);
+    expect(metrics.stubbed + metrics.partial).toBe(1);
+    // 15,990 (call_1) + 1 ("ok") + 1 ("b"): only reachable if the sweep landed at
+    // the turn-start call site (tokenCounts includes "ok" and "b"), not the
+    // mid-turn one two messages earlier (which would give 15,990).
+    expect(metrics.rewrittenTokens).toBe(15_992);
+  });
+});
+
+describe("replaySession compaction counters", () => {
+  // window 10,000 / reserve 0: compactionPoint = 10,000, emergencyBase = 8,000,
+  // lowWater*window = 3,000. call_1 (8,000 tokens) crosses emergencyBase at the
+  // second call site and gets swept there, banking a large saving. A second,
+  // untouched result (call_2, 3,000 tokens) then grows the RAW context past the
+  // compaction point at a later call site, while the mitigated context - still
+  // benefiting from call_1's earlier saving - stays under it: compactionsBefore
+  // increments once, compactionsAfter never does.
+  function line(role: string, content: unknown, extra: Record<string, unknown> = {}): string {
+    return JSON.stringify({ type: "message", id: `e${Math.random()}`, message: { role, content, ...extra } });
+  }
+
+  const jsonl = [
+    line("user", "a"), // 1 token
+    line("assistant", [{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "f.ts" } }]), // 4 tokens
+    line("toolResult", [{ type: "text", text: "x".repeat(32000) }], { toolCallId: "call_1", toolName: "read" }), // 8,000 tokens
+    line("user", "b"), // 1 token; call site here: ctx before = 8,006 >= emergencyBase (8,000) -> sweeps call_1
+    line("assistant", "ok"), // 1 token
+    line("user", "c"), // 1 token
+    line("assistant", [{ type: "toolCall", id: "call_2", name: "read", arguments: { path: "g.ts" } }]), // 4 tokens; call site here: ctx before = 8,008 (still under compactionPoint)
+    line("toolResult", [{ type: "text", text: "x".repeat(12000) }], { toolCallId: "call_2", toolName: "read" }), // 3,000 tokens
+    line("user", "d"), // 1 token
+    line("assistant", "done"), // call site here: ctx before = 11,013 (over compactionPoint); ctx after stays well under it
+  ].join("\n");
+
+  const config = { ...DEFAULT_CONFIG, minResultTokens: 1, protectTurns: 0, minSaving: 0 };
+  const options = { window: 10_000, reserveTokens: 0 };
+
+  it("counts a compaction the raw context would hit but the mitigated one avoids", async () => {
+    const metrics = await replaySession(jsonl, "compaction-count", stale, config, options);
+    expect(metrics.compactionsBefore).toBe(1);
+    expect(metrics.compactionsAfter).toBe(0);
+  });
+});
