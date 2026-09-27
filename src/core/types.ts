@@ -33,6 +33,7 @@ export interface Proposal {
   to: SkillState;
   fit: FitLevel | null;
   uses: number;
+  /** Tokens per session this change would save -- never the item's absolute cost. */
   tokens: number;
   reason: string;
 }

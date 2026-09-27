@@ -39,27 +39,31 @@ const FIT_LABEL: Record<FitLevel, string> = {
   4: "irrelevant",
 };
 
+const tokens = (n: number): string => `${n} ${n === 1 ? "token" : "tokens"}`;
+
 export function renderProposals(proposals: Proposal[]): string {
   if (proposals.length === 0) return "No changes proposed.";
-  const header = ["skill", "fit", "uses", "change", "cost", "why"];
+  const header = ["skill", "fit", "uses", "change", "saves", "why"];
   const rows = proposals.map((p) => [
     p.name,
     p.fit ? FIT_LABEL[p.fit] : "-",
     String(p.uses),
     `${p.from} -> ${p.to}`,
-    `${p.tokens} tokens`,
+    tokens(p.tokens),
     p.reason,
   ]);
   const widths = header.map((h, i) => Math.max(h.length, ...rows.map((row) => row[i].length)));
   const line = (cells: string[]) =>
     cells.map((cell, i) => cell.padEnd(widths[i])).join("  ").trimEnd();
-  const saved = proposals.filter((p) => p.to !== "on").reduce((sum, p) => sum + p.tokens, 0);
+  // No filtering needed: `tokens` is already the per-change saving, and a proposal can
+  // never raise an item's visibility, so every term here is zero or positive.
+  const saved = proposals.reduce((sum, p) => sum + p.tokens, 0);
   return [
     line(header),
     line(widths.map((w) => "-".repeat(w))),
     ...rows.map(line),
     "",
-    `Estimated saving: ${saved} tokens per session.`,
+    `Estimated saving: ${tokens(saved)} per session.`,
   ].join("\n");
 }
 

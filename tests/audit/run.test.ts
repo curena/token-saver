@@ -96,6 +96,14 @@ describe("renderProposals", () => {
     expect(text).toMatch(/30 tokens/);
   });
 
+  it("does not say '1 tokens'", () => {
+    const fits = new Map<string, FitLevel>([["pdf", 4]]);
+    const named = item("pdf", { currentState: "name-only" });
+    const text = renderProposals(buildProposals([named], fits, new Map()));
+    expect(text).toMatch(/\b1 token\b/);
+    expect(text).not.toMatch(/\b1 tokens\b/);
+  });
+
   it("says so when there is nothing to change", () => {
     expect(renderProposals([])).toMatch(/no changes/i);
   });
