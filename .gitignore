@@ -2,3 +2,5 @@ node_modules/
 .token-saver/
 eval/cases/
 dist/
+.env
+.env.*
