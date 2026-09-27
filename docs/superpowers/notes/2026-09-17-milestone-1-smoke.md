@@ -103,7 +103,7 @@ the whole file with `JSON.stringify(x, null, 2)`.
 
 So: **undo is a faithful semantic inverse, but not a byte-for-byte one.**
 
-## Defects found
+## Defects found — both fixed in `1d75a60`
 
 ### D1 — apply silently reverses a user's explicit `off`
 
@@ -128,9 +128,26 @@ with `pdf` already at `name-only` and `morning` already `off` as it did with no
 overrides at all. The estimate should be the delta between the current state's
 cost and the proposed state's cost.
 
+## Re-verification after the fix
+
+Same scratch root, same pre-existing `pdf: name-only` / `morning: off`, rebuilt
+CLI:
+
+- `morning` no longer appears in the table at all — clamped `off` → `off`, so
+  there is no change to propose. Apply touched 14 keys, not 15, and left
+  `"morning": "off"` intact.
+- `pdf` reports `name-only -> user-invocable-only` saving **1 token**, not the
+  111 it previously claimed.
+- Headline moved from 2,478 to **2,275 tokens** — the difference is the two
+  items that were already restricted, plus the name that `name-only` leaves
+  behind for `docs` (247 → 246) and `skill-creator` (84 → 80).
+- Undo restored both prior overrides exactly; the only diff against the
+  pre-apply bytes is still the JSON array re-formatting.
+
+178 tests pass (was 168), `tsc --noEmit` clean.
+
 ## Carry-forwards
 
-- D1 and D2 into Milestone 2.
 - A 401 currently renders as "errors or timeouts". An auth failure is permanent
   and actionable; a timeout may be transient. Fail-open flattens them together.
 - Writing `.claude/settings.local.json` is agent-blocked, so `--apply` is
