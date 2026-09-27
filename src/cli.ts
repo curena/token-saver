@@ -39,9 +39,33 @@ const USAGE = `usage:
 
 const KNOWN_AUDIT_FLAGS = new Set(["--apply", "--undo"]);
 
+/**
+ * Load `<root>/.env` if it is there, so `TYPESAFE_API_KEY` can live in a file instead of
+ * the shell. Node's own loader, not a dependency -- the spec allows exactly one runtime
+ * dependency, and `dotenv` would buy nothing `process.loadEnvFile` does not already do.
+ *
+ * Two properties this relies on:
+ *
+ * - The real environment wins. `loadEnvFile` does not overwrite a variable the shell
+ *   already set, so `TYPESAFE_API_KEY= token-saver audit` still takes the no-key path
+ *   even with a key sitting in `.env`. That is the fail-open case, and it stays testable.
+ * - It never throws here. A malformed `.env` is the user's file to fix, not a reason to
+ *   take down an audit that may not need a key at all.
+ */
+function loadDotEnv(root: string): void {
+  const path = join(root, ".env");
+  if (!existsSync(path)) return;
+  try {
+    process.loadEnvFile(path);
+  } catch (err) {
+    console.error(`token-saver: ignoring ${path}: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
 function context() {
   const home = process.env.TOKEN_SAVER_HOME ?? homedir();
   const root = process.env.TOKEN_SAVER_ROOT ?? process.cwd();
+  loadDotEnv(root);
   return { home, root, paths: claudePaths(home, root), store: new Store(root) };
 }
 

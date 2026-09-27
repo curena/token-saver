@@ -274,4 +274,47 @@ describe("cli", () => {
     // Fail-open still produces actionable output, not silence.
     expect(out.join("\n").length).toBeGreaterThan(0);
   });
+
+  describe(".env", () => {
+    it("reads TYPESAFE_API_KEY from <root>/.env", async () => {
+      writeFileSync(join(project, ".env"), "TYPESAFE_API_KEY=key-from-file\n", "utf8");
+      mockSystemOne.mockRejectedValue(new Error("no network in tests"));
+      addSkill("pdf", "PDFs");
+
+      expect(await main(["audit"])).toBe(0);
+      // A client is only constructed when a key is present, so its existence is the proof
+      // the file was read -- no assertion on the key's value, which never leaves the SDK.
+      expect(clientConfigs).toHaveLength(1);
+    });
+
+    it("lets an explicitly empty shell TYPESAFE_API_KEY override the file", async () => {
+      // This is the fail-open path Task 10 step 1 exercises: `TYPESAFE_API_KEY= token-saver
+      // audit` must still behave as if no key exists, even with one sitting in .env.
+      writeFileSync(join(project, ".env"), "TYPESAFE_API_KEY=key-from-file\n", "utf8");
+      process.env.TYPESAFE_API_KEY = "";
+      addSkill("pdf", "PDFs");
+
+      expect(await main(["audit"])).toBe(0);
+      expect(clientConfigs).toHaveLength(0);
+      expect(out.join("\n")).toMatch(/no changes/i);
+    });
+
+    it("warns but still audits when .env cannot be read", async () => {
+      // A directory named `.env` passes existsSync and then throws EISDIR. Node's env
+      // parser is lenient enough that bad *contents* do not throw, so an unreadable path
+      // is the case that actually exercises the guard.
+      mkdirSync(join(project, ".env"));
+      addSkill("pdf", "PDFs");
+
+      expect(await main(["audit"])).toBe(0);
+      expect(err.join("\n")).toMatch(/ignoring .*\.env/);
+    });
+
+    it("is silent and harmless when there is no .env", async () => {
+      addSkill("pdf", "PDFs");
+
+      expect(await main(["audit"])).toBe(0);
+      expect(err.join("\n")).not.toMatch(/\.env/);
+    });
+  });
 });

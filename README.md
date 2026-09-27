@@ -9,8 +9,18 @@ Milestone 1 ships the setup audit for Claude Code.
 npm install && npm run build && npm link
 ```
 
-Set `TYPESAFE_API_KEY` in your environment. Without it the audit still runs, but proposes
-nothing.
+Set `TYPESAFE_API_KEY`, either in your environment or in a `.env` file at the project root:
+
+```
+TYPESAFE_API_KEY=your-key-here
+```
+
+`.env` is gitignored, is read via Node's own loader (no dependency), and is on the redaction
+denylist below, so it is never sent anywhere. A variable already set in your shell wins over
+the file — so `TYPESAFE_API_KEY= token-saver audit` still exercises the no-key path even with
+a key on disk.
+
+Without a key the audit still runs, but proposes nothing.
 
 ## Use
 
