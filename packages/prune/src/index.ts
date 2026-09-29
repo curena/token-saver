@@ -1,5 +1,5 @@
 export * from "./types.js";
-export * from "./tokens.js";
+export { estimateTokens, calibrateCharsPerToken } from "@token-saver/core";
 export * from "./chunk.js";
 export * from "./render.js";
 export * from "./config.js";

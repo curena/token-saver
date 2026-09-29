@@ -1,12 +1,9 @@
 {
-  "name": "@token-saver/prune",
+  "name": "@token-saver/core",
   "version": "0.0.0",
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
-  },
-  "dependencies": {
-    "@token-saver/core": "*"
   }
 }

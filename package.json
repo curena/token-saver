@@ -7,15 +7,12 @@
   "workspaces": [
     "packages/*"
   ],
-  "bin": { "token-saver": "./dist/cli.js" },
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build:chmod",
-    "build:chmod": "node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
+    "build": "npm run build -w @token-saver/claude-code && npm run build -w @token-saver/pi",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -b packages/prune packages/replay packages/pi",
-    "dev": "tsx src/cli.ts"
+    "typecheck": "tsc -b packages/core packages/audit packages/claude-code packages/prune packages/replay packages/pi",
+    "dev": "tsx packages/claude-code/src/cli.ts"
   },
-  "dependencies": { "@typesafe-ai/sdk": "^0.6.0" },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.23.13",

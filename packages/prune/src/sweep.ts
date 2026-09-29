@@ -1,5 +1,5 @@
 import { chunkResult } from "./chunk.js";
-import { estimateTokens } from "./tokens.js";
+import { estimateTokens } from "@token-saver/core";
 import { buildRequest, judgeResult } from "./judge.js";
 import type { JevClient, TaskState } from "./judge.js";
 import { decideLevel } from "./policy/decide.js";

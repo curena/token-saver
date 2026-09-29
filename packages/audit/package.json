@@ -1,5 +1,5 @@
 {
-  "name": "@token-saver/prune",
+  "name": "@token-saver/audit",
   "version": "0.0.0",
   "type": "module",
   "main": "./src/index.ts",
@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@token-saver/core": "*"
+    "@token-saver/core": "*",
+    "@typesafe-ai/sdk": "^0.6.0"
   }
 }
