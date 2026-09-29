@@ -3,7 +3,7 @@ import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "@token-saver/prune";
-import type { JevClient, JevRequest } from "@token-saver/prune";
+import type { JevClient } from "@token-saver/prune";
 import { parseArgs } from "./args.js";
 import { readSessionFiles } from "./files.js";
 import { cachingClient } from "./jevCache.js";
@@ -15,13 +15,13 @@ import type { TauRun } from "./report.js";
 function httpClient(): JevClient {
   const key = process.env.TYPESAFE_API_KEY;
   return {
-    async systemOne(request: JevRequest, signal?: AbortSignal) {
+    async systemOne(request, options) {
       if (key === undefined) throw new Error("TYPESAFE_API_KEY is not set");
       const response = await fetch("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
         body: JSON.stringify(request),
-        signal,
+        signal: options?.signal,
       });
       if (!response.ok) throw new Error(`typesafe ${response.status}`);
       return (await response.json()) as { answers: Record<string, { noul: number }> };

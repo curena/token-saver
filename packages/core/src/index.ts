@@ -3,4 +3,4 @@
 export { estimateTokens, calibrateCharsPerToken } from "./tokens.js";
 export { redact, isDenylistedPath } from "./redact.js";
 export { Jev } from "./jev.js";
-export type { JevClient, JevOptions } from "./jev.js";
+export type { AskOptions, JevClient, JevOptions } from "./jev.js";

@@ -122,22 +122,40 @@ Extra flags:
 
 ## Redaction
 
-Before any project data (README, manifests, file tree, recent prompts) is sent to Jev,
-it is run through a redaction pass. A path matching the denylist is never read for this
-purpose at all:
+Everything either product sends to Jev goes through one pass in `packages/core` first —
+the audit's project data (README, manifests, file tree, recent prompts) and the pruner's
+tool-result text (file contents, command output) alike. Both reach Jev through the same
+wrapper, so redaction happens by construction rather than by each side remembering to do
+it.
 
-- `.env*`
+Two layers:
+
+**A path on the denylist is skipped entirely** — not redacted, not sent:
+
+- `.env*` (including `.envrc`)
 - `*.pem`
 - `id_*`
 - `secrets/**`
 
-Everything else is scanned for high-entropy strings (API keys, tokens) and redacted in
-place before it leaves your machine.
+The audit never opens such a file. The pruner never opens anything, so it does the
+equivalent: a tool result whose input names a denylisted path is left alone — unjudged,
+unsent, and unpruned. You lose the saving on that one result and the content never leaves
+the machine.
 
-**This covers the audit, not yet the pruner.** The pruner sends the text of tool
-results — file contents, command output — which is the half the requirement was written
-for. Closing that gap is tracked in
-[the reconciliation note](docs/superpowers/specs/2026-09-27-two-product-reconciliation.md), §5.
+**Everything else is scanned** for high-entropy strings — provider key prefixes, JWTs,
+`SOMETHING_TOKEN=…` assignments, and unrecognised random-looking runs — and each match is
+replaced with `[REDACTED]` before the request goes out.
+
+The masked copy exists only for the duration of the Jev call. Every line you or the agent
+sees — a rendered stub, a `recall`ed range, the audit's table — comes from the original
+text, so redaction never changes what the agent is working with. That also means the
+scanner is tuned for recall over precision: an over-eager mask costs Jev a little context
+and nothing else.
+
+Known limits, stated rather than implied: the denylist matches paths, so a secret typed
+straight into a command (`export API_KEY=…`) is caught by the content scan or not at all,
+and the scan is a heuristic. Precision gets measured against the eval harness in
+Milestone 2.
 
 ## Development
 

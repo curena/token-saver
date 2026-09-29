@@ -3,9 +3,25 @@ import { redact } from "./redact.js";
 
 export interface JevClient {
   systemOne(
-    request: { state: unknown; questions: Record<string, unknown> },
+    request: { state: unknown; questions: Record<string, unknown>; model?: string },
     options?: { signal?: AbortSignal },
   ): Promise<{ answers: Record<string, any> }>;
+}
+
+export interface AskOptions {
+  /**
+   * Pinned Jev model, sent inside the request body. The HTTP API reads it there; the SDK
+   * carries the model on its question objects instead, so the audit leaves this unset and
+   * the pruner sets it. Unset means the key is absent from the request, not present and
+   * undefined -- the SDK client is third-party code and gets exactly the shape it expects.
+   */
+  model?: string;
+  /**
+   * The caller's own abort -- a pi sweep that has been cancelled, say. It aborts the
+   * request alongside this wrapper's deadline, and a signal already aborted on entry fails
+   * open immediately rather than spending a request that is about to be thrown away.
+   */
+  signal?: AbortSignal;
 }
 
 export interface JevOptions {
@@ -56,7 +72,9 @@ function redactDeep(value: unknown, seen: WeakSet<object> = new WeakSet()): unkn
  * question is an SDK-built object rather than plain data, and rebuilding one generically
  * would couple this module to the SDK's internal shape. Every question builder is therefore
  * responsible for redacting anything it interpolates into its own question text. See
- * `fitQuestions` in packages/audit/src/questions/fit.ts for the pattern.
+ * `fitQuestions` in packages/audit/src/questions/fit.ts for the pattern, and
+ * `instructionsFor` in packages/prune/src/judge.ts for the other way of satisfying it:
+ * interpolate nothing that came from the session in the first place.
  */
 export class Jev {
   private readonly client: JevClient | null;
@@ -74,11 +92,15 @@ export class Jev {
   async ask(
     state: unknown,
     questions: Record<string, unknown>,
+    options: AskOptions = {},
   ): Promise<Record<string, any> | null> {
     if (!this.client) return null;
+    if (options.signal?.aborted) return null;
 
     const started = Date.now();
     const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       // Redaction and the cache key are computed inside this guard too: `state` is
@@ -86,8 +108,15 @@ export class Jev {
       // BigInts) must not escape as an unhandled rejection — it has to fail open like
       // everything else this method does.
       const safeState = redactDeep(state);
+      const request =
+        options.model === undefined
+          ? { state: safeState, questions }
+          : { state: safeState, questions, model: options.model };
+      // The model is part of the key: thresholds are tuned per model version, so an answer
+      // from one model must not be served to a caller that asked for another. An absent
+      // model stringifies away, leaving the key it had before models were supported.
       const key = createHash("sha256")
-        .update(JSON.stringify({ state: safeState, questions }))
+        .update(JSON.stringify({ state: safeState, questions, model: options.model }))
         .digest("hex");
 
       const hit = this.cache.get(key);
@@ -97,7 +126,7 @@ export class Jev {
       }
 
       const response = await Promise.race([
-        this.client.systemOne({ state: safeState, questions }, { signal: controller.signal }),
+        this.client.systemOne(request, { signal: controller.signal }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             controller.abort();
@@ -126,6 +155,7 @@ export class Jev {
       return null;
     } finally {
       if (timer) clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
     }
   }
 }

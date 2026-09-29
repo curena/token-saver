@@ -22,6 +22,61 @@ describe("Jev", () => {
     expect(JSON.stringify(seen[0])).not.toContain("abcdefghijklmnopqrstuvwx");
   });
 
+  it("omits `model` from the request when the caller sets none", async () => {
+    // The audit's client is the third-party SDK, which gets the shape it expects and no
+    // stray `model: undefined` key.
+    const seen: any[] = [];
+    const client = {
+      systemOne: async (req: any) => { seen.push(req); return { answers: { q: { noul: 0.5 } } }; },
+    };
+    await new Jev({ client }).ask({ a: 1 }, questions);
+    expect("model" in seen[0]).toBe(false);
+  });
+
+  it("sends `model` inside the request when the caller pins one", async () => {
+    const seen: any[] = [];
+    const client = {
+      systemOne: async (req: any) => { seen.push(req); return { answers: { q: { noul: 0.5 } } }; },
+    };
+    await new Jev({ client }).ask({ a: 1 }, questions, { model: "jev-1.13.0" });
+    expect(seen[0].model).toBe("jev-1.13.0");
+  });
+
+  it("does not serve one model's cached answer to another model", async () => {
+    const systemOne = vi.fn(async () => ({ answers: { q: { noul: 0.5 } } }));
+    const jev = new Jev({ client: { systemOne } });
+    await jev.ask({ a: 1 }, questions, { model: "jev-1.13.0" });
+    await jev.ask({ a: 1 }, questions, { model: "jev-1.14.0" });
+    expect(systemOne).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns null without calling when the caller's signal is already aborted", async () => {
+    const systemOne = vi.fn(async () => ({ answers: { q: { noul: 0.5 } } }));
+    const jev = new Jev({ client: { systemOne } });
+    expect(await jev.ask({ a: 1 }, questions, { signal: AbortSignal.abort() })).toBeNull();
+    expect(systemOne).not.toHaveBeenCalled();
+  });
+
+  it("aborts the in-flight request when the caller's signal fires", async () => {
+    const controller = new AbortController();
+    let aborted = false;
+    const client = {
+      systemOne: (_req: any, options?: { signal?: AbortSignal }) =>
+        new Promise<any>((_, reject) => {
+          options?.signal?.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          });
+        }),
+    };
+    const pending = new Jev({ client, deadlineMs: 10_000 }).ask({ a: 1 }, questions, {
+      signal: controller.signal,
+    });
+    controller.abort();
+    expect(await pending).toBeNull();
+    expect(aborted).toBe(true);
+  });
+
   it("returns null when the call exceeds the deadline", async () => {
     const client = {
       systemOne: () => new Promise<any>((resolve) => setTimeout(resolve, 200)),

@@ -65,3 +65,52 @@ describe("selectEligible", () => {
     expect(selectEligible([ref({ toolName: "recall", turnsAgo: 9 })], none, DEFAULT_CONFIG)).toHaveLength(1);
   });
 });
+
+describe("selectEligible and the secrets denylist", () => {
+  // The other half of "redact locally, then send": a denylisted file is not sent at all,
+  // redacted or otherwise. The cost is the saving on that one result.
+  const decided = new Map<string, Decision>();
+
+  function big(input: Record<string, unknown>): ResultRef {
+    return {
+      id: "call_1", toolName: "read", input,
+      text: "x", tokens: 9000, messageIndex: 1, turnsAgo: 5, isError: false,
+    };
+  }
+
+  it("leaves a result alone when its input names a denylisted path", () => {
+    for (const input of [
+      { path: ".env" },
+      { path: ".env.production" },
+      { path: "/home/me/project/.envrc" },
+      { path: "certs/server.pem" },
+      { path: "/home/me/.ssh/id_ed25519" },
+      { path: "secrets/prod.json" },
+      { command: "cat .env" },
+      { command: "grep -r TOKEN secrets/" },
+      { paths: ["src/app.ts", "deploy/secrets/keys.json"] },
+      { nested: { file: { path: "config/.env.local" } } },
+    ]) {
+      expect(selectEligible([big(input)], decided, DEFAULT_CONFIG)).toEqual([]);
+    }
+  });
+
+  it("still sweeps an ordinary path that merely mentions the words", () => {
+    for (const input of [
+      { path: "src/environment.ts" },
+      { path: "docs/secrets-policy.md" },
+      { path: "src/identity.ts" },
+      { command: "npm run build" },
+    ]) {
+      expect(selectEligible([big(input)], decided, DEFAULT_CONFIG)).toHaveLength(1);
+    }
+  });
+
+  it("does not walk an input deep enough to be a denial of service", () => {
+    // Nested past the bound, so the secret is missed -- deliberately. A harness that
+    // produced this shape would be the bug; an unbounded walk here would be ours.
+    let input: Record<string, unknown> = { path: ".env" };
+    for (let i = 0; i < 8; i++) input = { wrap: input };
+    expect(selectEligible([big(input)], decided, DEFAULT_CONFIG)).toHaveLength(1);
+  });
+});
