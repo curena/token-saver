@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "token-saver hook session-start", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
