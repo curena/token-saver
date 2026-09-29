@@ -2,8 +2,8 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG } from "@token-saver/core";
-import type { JevClient } from "@token-saver/core";
+import { DEFAULT_CONFIG } from "@token-saver/prune";
+import type { JevClient } from "@token-saver/prune";
 import { cachingClient } from "../src/jevCache.js";
 import { replaySession } from "../src/run.js";
 

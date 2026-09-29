@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { collectLaterUses, detectMisses } from "../src/retention.js";
-import type { Chunk } from "@token-saver/core";
+import type { Chunk } from "@token-saver/prune";
 
 const jsonl = readFileSync(join(import.meta.dirname, "fixtures/session.jsonl"), "utf8");
 

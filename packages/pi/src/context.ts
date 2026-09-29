@@ -1,5 +1,5 @@
-import { emergencyLevel, estimateTokens, findSuperseded, nextArmAt, runSweep, turnLevel } from "@token-saver/core";
-import type { Config, FileTouch, JevClient, ResultRef, SweepOutcome, TaskState } from "@token-saver/core";
+import { emergencyLevel, estimateTokens, findSuperseded, nextArmAt, runSweep, turnLevel } from "@token-saver/prune";
+import type { Config, FileTouch, JevClient, ResultRef, SweepOutcome, TaskState } from "@token-saver/prune";
 import type { DecisionStore } from "./state.js";
 
 export interface PiMessage {

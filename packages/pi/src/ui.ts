@@ -1,4 +1,4 @@
-import type { SweepEntryData } from "@token-saver/core";
+import type { SweepEntryData } from "@token-saver/prune";
 
 export function renderSweepEntry(data: SweepEntryData): string {
   const saved = data.decisions.reduce((sum, decision) => sum + decision.savedTokens, 0);

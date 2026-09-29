@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DecisionStore, RESTORE_ENTRY, SWEEP_ENTRY } from "../src/state.js";
-import type { Decision } from "@token-saver/core";
+import type { Decision } from "@token-saver/prune";
 
 function decision(id: string, level: Decision["level"] = "stub"): Decision {
   return {

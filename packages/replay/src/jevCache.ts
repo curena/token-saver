@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { JevClient, JevRequest } from "@token-saver/core";
+import type { JevClient, JevRequest } from "@token-saver/prune";
 
 type Answers = { answers: Record<string, { noul: number }> };
 

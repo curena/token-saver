@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.json && npm run build:chmod",
     "build:chmod": "node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -b packages/core packages/replay packages/pi",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -b packages/prune packages/replay packages/pi",
     "dev": "tsx src/cli.ts"
   },
   "dependencies": { "@typesafe-ai/sdk": "^0.6.0" },

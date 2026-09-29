@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { emergencyLevel, loadConfig, turnLevel } from "@token-saver/core";
-import type { Config, SweepEntryData } from "@token-saver/core";
+import { emergencyLevel, loadConfig, turnLevel } from "@token-saver/prune";
+import type { Config, SweepEntryData } from "@token-saver/prune";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { handleContext } from "./context.js";

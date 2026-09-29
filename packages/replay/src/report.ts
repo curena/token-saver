@@ -1,4 +1,4 @@
-import type { Prices } from "@token-saver/core";
+import type { Prices } from "@token-saver/prune";
 import type { ReplayMetrics } from "./run.js";
 
 export interface TauRun {

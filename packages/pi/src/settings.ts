@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { DEFAULT_RESERVE_TOKENS } from "@token-saver/core";
+import { DEFAULT_RESERVE_TOKENS } from "@token-saver/prune";
 
 /**
  * pi's `compaction.reserveTokens` from its settings files (global, then project).

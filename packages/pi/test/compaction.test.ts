@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { DecisionStore, SWEEP_ENTRY } from "../src/state.js";
-import type { Decision } from "@token-saver/core";
+import type { Decision } from "@token-saver/prune";
 
 function decision(id: string): Decision {
   return { id, level: "stub", rendered: `[token-saver] ${id}`, savedTokens: 1000, reason: "judged", keptChunks: [], decidedAtTurn: 1 };

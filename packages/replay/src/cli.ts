@@ -2,8 +2,8 @@
 import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG } from "@token-saver/core";
-import type { JevClient, JevRequest } from "@token-saver/core";
+import { DEFAULT_CONFIG } from "@token-saver/prune";
+import type { JevClient, JevRequest } from "@token-saver/prune";
 import { parseArgs } from "./args.js";
 import { readSessionFiles } from "./files.js";
 import { cachingClient } from "./jevCache.js";
