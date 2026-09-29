@@ -365,7 +365,12 @@ describe("chunkResult", () => {
 
   it("splits a read at top-level declarations", () => {
     const body = (name: string) =>
-      [`export function ${name}() {`, "  const x = 1;", "  return x;", "}"].join("\n");
+      [
+        `export function ${name}() {`,
+        ...Array.from({ length: 9 }, (_, i) => `  const step${i} = ${i};`),
+        "  return 0;",
+        "}",
+      ].join("\n");
     const text = [body("alpha"), body("beta"), body("gamma")].join("\n");
     const chunks = chunkResult("read", text);
     expect(chunks.length).toBeGreaterThan(1);
@@ -412,6 +417,11 @@ Expected: FAIL, cannot resolve `../src/chunk.js`.
 import type { Chunk } from "./types.js";
 import { estimateTokens } from "./tokens.js";
 
+/**
+ * `isBoundary(line, previous)` answers "does a new chunk start AT `line`?".
+ * Blank-line separation keys off `previous`, so the blank ends the chunk
+ * before it rather than heading the chunk after it.
+ */
 interface Shape {
   min: number;
   max: number;
@@ -424,13 +434,15 @@ const SHAPES: Record<string, Shape> = {
   read: {
     min: 20,
     max: 60,
-    isBoundary: (line) => DECLARATION.test(line) || line.trim() === "",
+    isBoundary: (line, previous) =>
+      DECLARATION.test(line) || (previous !== undefined && previous.trim() === ""),
   },
   bash: {
     min: 20,
     max: 40,
     isBoundary: (line, previous) =>
-      line.trim() === "" || (previous !== undefined && prefix(line) !== prefix(previous)),
+      previous !== undefined &&
+      (previous.trim() === "" || prefix(line) !== prefix(previous)),
   },
   generic: { min: 40, max: 40, isBoundary: () => false },
 };
@@ -841,7 +853,9 @@ describe("decideLevel", () => {
   });
 
   it("leaves the result alone when the saving is under minSaving", () => {
-    const plan = decideLevel(chunks([5000, 400]), [0.9, 0.01], DEFAULT_CONFIG);
+    // Kept 600 of 1000 is below leaveAloneRatio, so this reaches the minSaving
+    // rule: 1000 - 600 - 40 = 360, under the 500 floor.
+    const plan = decideLevel(chunks([600, 400]), [0.9, 0.01], DEFAULT_CONFIG);
     expect(plan.level).toBe("leave");
   });
 
@@ -850,9 +864,32 @@ describe("decideLevel", () => {
     expect(plan.savedTokens).toBe(8900);
   });
 
-  it("stubs when there are no chunks to keep and probabilities are missing", () => {
+  it("keeps a chunk whose probability is missing", () => {
     const plan = decideLevel(chunks([3000]), [], DEFAULT_CONFIG);
-    expect(plan.level).toBe("stub");
+    expect(plan.level).toBe("leave");
+    expect(plan.savedTokens).toBe(0);
+  });
+
+  it("keeps the unscored chunk when the probabilities run short", () => {
+    const plan = decideLevel(chunks([2000, 2000, 2000]), [0.9, 0.01], DEFAULT_CONFIG);
+    expect(plan.keptChunks).toEqual([0, 2]);
+  });
+
+  it("treats leaveAloneRatio as inclusive", () => {
+    const at = decideLevel(chunks([7000, 3000]), [0.9, 0.01], DEFAULT_CONFIG);
+    expect(at.level).toBe("leave");
+    const under = decideLevel(chunks([6900, 3100]), [0.9, 0.01], DEFAULT_CONFIG);
+    expect(under.level).toBe("partial");
+    expect(under.savedTokens).toBe(3100 - 40);
+  });
+
+  it("treats minSaving as inclusive", () => {
+    // 1700 - 1160 - 40 = 500 exactly, with kept tokens under leaveAloneRatio.
+    const at = decideLevel(chunks([1160, 540]), [0.9, 0.01], DEFAULT_CONFIG);
+    expect(at.level).toBe("partial");
+    expect(at.savedTokens).toBe(500);
+    const under = decideLevel(chunks([1161, 539]), [0.9, 0.01], DEFAULT_CONFIG);
+    expect(under.level).toBe("leave");
   });
 });
 ```
@@ -886,7 +923,7 @@ export function decideLevel(
   const total = chunks.reduce((sum, chunk) => sum + chunk.tokens, 0);
   if (total === 0) return LEAVE;
 
-  const kept = chunks.filter((chunk) => (probabilities[chunk.index] ?? 0) >= config.keepThreshold);
+  const kept = chunks.filter((chunk) => keepScore(probabilities[chunk.index]) >= config.keepThreshold);
   const keptTokens = kept.reduce((sum, chunk) => sum + chunk.tokens, 0);
 
   if (keptTokens >= total * config.leaveAloneRatio) return LEAVE;
@@ -1028,14 +1065,23 @@ import { pathOf } from "./policy/staleness.js";
 
 const MARKER = "[token-saver]";
 
+/** Budget for a command description. A path is never truncated: it is the one
+ *  part of a stub the agent needs intact to decide whether to recall it. */
+const MAX_COMMAND_DESCRIPTION = 60;
+
+function truncate(text: string, limit: number): string {
+  return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
+}
+
 export function describeResult(result: ResultRef): string {
   const path = pathOf(result);
   if (path !== null) return `${result.toolName} ${path}`;
   const command = result.input.command;
   if (typeof command === "string") {
     const head = command.split("\n")[0]!;
-    const room = 60 - result.toolName.length - 2;
-    return `${result.toolName}: ${head.length > room ? `${head.slice(0, room - 1)}…` : head}`;
+    // Truncate the whole composed string, not just the command: an MCP tool
+    // name can be longer than the budget on its own.
+    return truncate(`${result.toolName}: ${head}`, MAX_COMMAND_DESCRIPTION);
   }
   return result.toolName;
 }
@@ -1237,6 +1283,10 @@ export interface CostPlan {
 
 const NONE: CostPlan = { sweep: false, fromIndex: -1, ids: [], value: 0, cost: 0 };
 
+function usableCaching(prices: Prices | null): prices is Prices {
+  return prices !== null && prices.cacheRead >= 0 && prices.cacheWrite > prices.cacheRead;
+}
+
 export function expectedCalls(callsSoFar: number): number {
   return Math.min(40, Math.max(3, callsSoFar));
 }
@@ -1247,8 +1297,11 @@ export function planCostGate(input: CostInput): CostPlan {
 
   const sorted = [...candidates].sort((a, b) => a.messageIndex - b.messageIndex);
 
-  // No prompt caching: nothing is re-written, so only the size of the saving matters.
-  if (prices === null || prices.cacheWrite <= 0) {
+  // No usable prompt caching: nothing is re-written, so only the size of the
+  // saving matters. A quote where writing is no dearer than reading is treated
+  // as unusable rather than trusted — a negative `cacheWrite - cacheRead` would
+  // make the cost negative and wave every sweep through.
+  if (!usableCaching(prices)) {
     const saved = sorted.reduce((sum, candidate) => sum + candidate.expectedSave, 0);
     const floor = input.noCacheFloor ?? 4000;
     return saved >= floor
@@ -1265,8 +1318,12 @@ export function planCostGate(input: CostInput): CostPlan {
     const saved = taken.reduce((sum, candidate) => sum + candidate.expectedSave, 0);
     const fromIndex = taken[0]!.messageIndex;
     const suffix = input.tokensAfter(fromIndex);
-    const value = saved * calls * prices.cacheRead;
-    const cost = Math.max(0, suffix - saved) * (prices.cacheWrite - prices.cacheRead);
+    // A saving cannot exceed the suffix it comes out of. If the caller says
+    // otherwise its numbers disagree, so believe the smaller one for both
+    // sides of the gate rather than crediting a saving that cannot exist.
+    const realised = Math.min(saved, Math.max(0, suffix));
+    const value = realised * calls * prices.cacheRead;
+    const cost = (suffix - realised) * (prices.cacheWrite - prices.cacheRead);
     const net = value - cost;
     if (value >= costMargin * cost && net > bestNet) {
       bestNet = net;
@@ -1496,15 +1553,26 @@ export async function judgeResult(
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   signal?.addEventListener("abort", onAbort, { once: true });
-  const timer = setTimeout(() => controller.abort(), config.jevBudgetMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A client that ignores its signal would otherwise hang the sweep, so the
+  // budget is a race, not just an abort.
+  const budget = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, config.jevBudgetMs);
+  });
 
   try {
-    const response = await client.systemOne(request, controller.signal);
+    const response = await Promise.race([client.systemOne(request, controller.signal), budget]);
+    if (response === null) return null;
     const probabilities: number[] = [];
     for (let index = 0; index < chunkCount; index++) {
       const answer = response.answers[`chunk::${index}`];
-      // A missing answer must never drop content.
-      probabilities.push(typeof answer?.noul === "number" ? answer.noul : 1);
+      // A missing OR malformed answer must never drop content. `typeof` alone
+      // admits NaN and out-of-range numbers, and both read as "drop" once they
+      // meet the keep threshold, so the range is checked here.
+      probabilities.push(isProbability(answer?.noul) ? answer.noul : 1);
     }
     return probabilities;
   } catch {
@@ -1519,7 +1587,7 @@ export async function judgeResult(
 - [ ] **Step 5: Run the test and watch it pass**
 
 Run: `npx vitest run packages/core/test/judge.test.ts`
-Expected: PASS, 9 tests. The budget test needs the timeout to reject the awaited promise: if a client ignores its signal, the test's fake timers still fire `controller.abort()`, and `judgeResult` must not hang. If it does, wrap the call in `Promise.race` against a timer that resolves to `null`.
+Expected: PASS, 9 tests. The budget test drives fake timers: `advanceTimersByTimeAsync(60)` fires the budget timer, whose `resolve(null)` wins the race even though the fake client never settles.
 
 - [ ] **Step 6: Commit**
 
@@ -1593,14 +1661,19 @@ function allStale(): JevClient {
 }
 
 function input(over: Partial<SweepInput> = {}): SweepInput {
+  const results = over.results ?? [bigRead("a", "src/app.ts", 10), bigRead("b", "src/other.ts", 12)];
   return {
-    results: [bigRead("a", "src/app.ts", 10), bigRead("b", "src/other.ts", 12)],
+    results,
     decided: new Map(),
     touches: [],
     task: { recent_user_messages: ["go"], latest_assistant_text: "", working_files: [] },
     afterResultFor: () => "",
-    tokensAfter: () => 30_000,
-    callsSoFar: 20,
+    // A realistic suffix: the results themselves plus a small tail. The cost gate
+    // weighs the saving against what a rewrite re-caches, so an arbitrarily large
+    // suffix would make every sweep in these tests look unaffordable.
+    tokensAfter: (messageIndex) =>
+      results.filter((r) => r.messageIndex >= messageIndex).reduce((sum, r) => sum + r.tokens, 0) + 300,
+    callsSoFar: 40,
     prices: PRICES,
     config: DEFAULT_CONFIG,
     client: allStale(),
@@ -1912,18 +1985,35 @@ git commit -m "feat(core): sweep orchestrator and decision application"
 `packages/core/test/config.test.ts`:
 
 ```ts
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, loadConfig } from "../src/config.js";
 
-function fileWith(contents: unknown): string {
+const createdDirs: string[] = [];
+
+function tempFile(contents: string): string {
   const dir = mkdtempSync(join(tmpdir(), "token-saver-"));
+  createdDirs.push(dir);
   const path = join(dir, "token-saver.json");
-  writeFileSync(path, JSON.stringify(contents));
+  writeFileSync(path, contents);
   return path;
 }
+
+function fileWith(contents: unknown): string {
+  return tempFile(JSON.stringify(contents));
+}
+
+function fileWithRaw(contents: string): string {
+  return tempFile(contents);
+}
+
+afterEach(() => {
+  for (const dir of createdDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe("loadConfig", () => {
   it("returns the defaults with no files or env", () => {
@@ -1960,13 +2050,31 @@ describe("loadConfig", () => {
     expect(config).toEqual(DEFAULT_CONFIG);
   });
 
+  it("ignores a malformed config file", () => {
+    expect(loadConfig({ files: [fileWithRaw("not json {")], env: {} })).toEqual(DEFAULT_CONFIG);
+  });
+
   it("ignores non-numeric env values for numeric settings", () => {
     expect(loadConfig({ files: [], env: { TOKEN_SAVER_PROTECT_TURNS: "soon" } }).protectTurns).toBe(2);
+  });
+
+  it("ignores empty-string env values for numeric settings", () => {
+    expect(loadConfig({ files: [], env: { TOKEN_SAVER_PROTECT_TURNS: "" } }).protectTurns).toBe(2);
   });
 
   it("reads excludedTools as a comma-separated env list", () => {
     const config = loadConfig({ files: [], env: { TOKEN_SAVER_EXCLUDED_TOOLS: "edit,write,apply_patch" } });
     expect(config.excludedTools).toEqual(["edit", "write", "apply_patch"]);
+  });
+
+  it("ignores empty-string excludedTools", () => {
+    expect(loadConfig({ files: [], env: { TOKEN_SAVER_EXCLUDED_TOOLS: "" } }).excludedTools).toEqual(["edit", "write"]);
+  });
+
+  it("does not alias the default excludedTools array", () => {
+    const config = loadConfig({ files: [], env: {} });
+    config.excludedTools.push("apply_patch");
+    expect(DEFAULT_CONFIG.excludedTools).toEqual(["edit", "write"]);
   });
 });
 ```
@@ -1978,7 +2086,7 @@ Expected: FAIL, `loadConfig` is not exported.
 
 - [ ] **Step 3: Implement**
 
-Append to `packages/core/src/config.ts`:
+Append to `packages/core/src/config.ts` — put the new `import` with the existing one at the top of the file, and the rest below `DEFAULT_CONFIG`:
 
 ```ts
 import { readFileSync } from "node:fs";
@@ -1996,7 +2104,7 @@ export function loadConfig(
   options: { files?: string[]; env?: NodeJS.ProcessEnv } = {},
 ): Config {
   const env = options.env ?? process.env;
-  const config: Config = { ...DEFAULT_CONFIG };
+  const config: Config = { ...DEFAULT_CONFIG, excludedTools: [...DEFAULT_CONFIG.excludedTools] };
 
   for (const file of options.files ?? []) {
     let parsed: Record<string, unknown>;
@@ -2019,13 +2127,16 @@ export function loadConfig(
   for (const key of NUMERIC_KEYS) {
     const raw = env[envName(key)];
     if (raw === undefined) continue;
+    if (raw.trim() === "") continue; // an empty env value is "not set", never coerced to 0
     const value = Number(raw);
     if (Number.isFinite(value)) config[key] = value;
   }
   const model = env.TOKEN_SAVER_JEV_MODEL;
   if (model !== undefined && model.length > 0) config.jevModel = model;
   const tools = env.TOKEN_SAVER_EXCLUDED_TOOLS;
-  if (tools !== undefined) config.excludedTools = tools.split(",").map((t) => t.trim()).filter(Boolean);
+  if (tools !== undefined && tools.trim() !== "") {
+    config.excludedTools = tools.split(",").map((t) => t.trim()).filter(Boolean);
+  }
   if (env.TOKEN_SAVER === "off") config.enabled = false;
 
   return config;
@@ -2035,7 +2146,7 @@ export function loadConfig(
 - [ ] **Step 4: Run the test and watch it pass**
 
 Run: `npx vitest run packages/core/test/config.test.ts`
-Expected: PASS, 7 tests.
+Expected: PASS, 11 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2104,7 +2215,7 @@ git commit -m "feat(core): load config from files and environment"
 {"type":"session","id":"s1","timestamp":"2026-09-01T10:00:00.000Z"}
 {"type":"message","id":"e1","parentId":"s1","timestamp":"2026-09-01T10:00:01.000Z","message":{"role":"user","content":"fix the login test","timestamp":1}}
 {"type":"message","id":"e2","parentId":"e1","timestamp":"2026-09-01T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Reading the handler"},{"type":"toolCall","id":"call_1","name":"read","arguments":{"path":"src/auth.ts"}}],"api":"anthropic","provider":"anthropic","model":"claude-sonnet-5","usage":{"input":1000,"output":50,"cacheRead":0,"cacheWrite":1000},"stopReason":"toolUse","timestamp":2}}
-{"type":"message","id":"e3","parentId":"e2","timestamp":"2026-09-01T10:00:03.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"read","content":[{"type":"text","text":"export function login() {}\nconst x = 1;"}],"isError":false,"timestamp":3}}
+{"type":"message","id":"e3","parentId":"e2","timestamp":"2026-09-01T10:00:03.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"read","content":[{"type":"text","text":"export interface Credentials {\n  user: string;\n  pass: string;\n}\n\nexport interface Session {\n  id: string;\n  userId: string;\n  createdAt: number;\n}\n\nconst sessions = new Map<string, Session>();\n\nexport function login(credentials: Credentials): Session {\n  const session: Session = {\n    id: \"sess-\" + Date.now().toString(36),\n    userId: credentials.user,\n    createdAt: Date.now(),\n  };\n  sessions.set(session.id, session);\n  return session;\n}\n\nexport function logout(sessionId: string): void {\n  sessions.delete(sessionId);\n}\n\nexport function sessionFor(sessionId: string): Session | undefined {\n  return sessions.get(sessionId);\n}\n\nexport function rotate(sessionId: string): Session | undefined {\n  const current = sessions.get(sessionId);\n  if (current === undefined) return undefined;\n  const next: Session = { ...current, id: \"sess-\" + Date.now().toString(36), createdAt: Date.now() };\n  sessions.delete(sessionId);\n  sessions.set(next.id, next);\n  return next;\n}\n\nexport function touch(sessionId: string, now = Date.now()): void {\n  const current = sessions.get(sessionId);\n  if (current !== undefined) {\n    current.createdAt = now;\n  }\n}"}],"isError":false,"timestamp":3}}
 {"type":"message","id":"e4","parentId":"e3","timestamp":"2026-09-01T10:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Now editing"},{"type":"toolCall","id":"call_2","name":"edit","arguments":{"path":"src/auth.ts"}}],"api":"anthropic","provider":"anthropic","model":"claude-sonnet-5","usage":{"input":2000,"output":40,"cacheRead":1000,"cacheWrite":100},"stopReason":"toolUse","timestamp":4}}
 {"type":"message","id":"e5","parentId":"e4","timestamp":"2026-09-01T10:00:05.000Z","message":{"role":"toolResult","toolCallId":"call_2","toolName":"edit","content":[{"type":"text","text":"ok"}],"isError":false,"timestamp":5}}
 {"type":"message","id":"e6","parentId":"e5","timestamp":"2026-09-01T10:00:06.000Z","message":{"role":"user","content":"now run the tests","timestamp":6}}
@@ -2287,16 +2398,8 @@ export function parseSession(jsonl: string): CallSite[] {
 
     if (message.role !== "assistant") continue;
 
-    for (const block of Array.isArray(message.content) ? message.content : []) {
-      const call = block as { type?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
-      if (call.type !== "toolCall" || call.id === undefined || call.name === undefined) continue;
-      const args = call.arguments ?? {};
-      callsById.set(call.id, { name: call.name, args, turn: userTurn });
-      const kind = TOUCH_KIND[call.name];
-      const path = pathArg(args);
-      if (kind !== undefined && path !== null) touches.push({ path, messageIndex, kind });
-    }
-
+    // A call site is the context as it stood when the model was asked to produce
+    // THIS message, so it is recorded before this message's own tool calls are.
     const workingFiles = [...new Set(
       touches.filter((t) => t.kind !== "read").map((t) => t.path),
     )];
@@ -2317,6 +2420,16 @@ export function parseSession(jsonl: string): CallSite[] {
     });
 
     latestAssistantText = textOf(message.content);
+
+    for (const block of Array.isArray(message.content) ? message.content : []) {
+      const call = block as { type?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
+      if (call.type !== "toolCall" || call.id === undefined || call.name === undefined) continue;
+      const args = call.arguments ?? {};
+      callsById.set(call.id, { name: call.name, args, turn: userTurn });
+      const kind = TOUCH_KIND[call.name];
+      const path = pathArg(args);
+      if (kind !== undefined && path !== null) touches.push({ path, messageIndex, kind });
+    }
   }
 
   return sites;
@@ -2332,7 +2445,7 @@ export function afterResultSummary(site: CallSite, result: ResultRef): string {
 - [ ] **Step 5: Run the test and watch it pass**
 
 Run: `npx vitest run packages/replay/test/session.test.ts`
-Expected: PASS, 9 tests. Note `latestAssistantText` is the text of the *previous* assistant message, which is what the sweep needs: the model call being replayed has not happened yet.
+Expected: PASS, 9 tests. Note `latestAssistantText` is the text of the *previous* assistant message, and a site's `touches` exclude the calls made in its own message — both because the model call being replayed has not happened yet.
 
 - [ ] **Step 6: Commit**
 
@@ -2397,7 +2510,7 @@ describe("detectMisses", () => {
 
   it("reports an elided chunk whose line the agent later used", () => {
     const misses = detectMisses("call_1", chunks, [0.1, 0.05], [0, 1], [
-      { text: "the call to session.create(credentials); is wrong", kind: "assistant" },
+      { text: "return session.create(credentials); is wrong here", kind: "assistant" },
     ]);
     expect(misses).toEqual([{ resultId: "call_1", chunkIndex: 0, probability: 0.1, evidence: "assistant" }]);
   });
@@ -2787,8 +2900,8 @@ git commit -m "feat(replay): session runner with cached Jev answers and miss tra
 ### Task 14: The replay CLI and report
 
 **Files:**
-- Create: `packages/replay/src/report.ts`, `packages/replay/src/cli.ts`
-- Test: `packages/replay/test/report.test.ts`
+- Create: `packages/replay/src/report.ts`, `packages/replay/src/args.ts`, `packages/replay/src/cli.ts`
+- Test: `packages/replay/test/report.test.ts`, `packages/replay/test/args.test.ts`
 
 **Interfaces:**
 - Consumes: `ReplayMetrics`.
@@ -2805,7 +2918,7 @@ git commit -m "feat(replay): session runner with cached Jev answers and miss tra
   };
   export function renderReport(runs: TauRun[]): string;   // markdown, one row per tau
   ```
-  CLI: `token-saver-replay <sessions-dir-or-file...> [--tau 0.1,0.3] [--report out/] [--model <pi model id>]`. It writes `out/report.md` and `out/metrics.json`, caches Jev answers in `out/jev-cache.json`, and prints the summary table.
+  CLI: `token-saver-replay <sessions-dir-or-file...> [--tau 0.1,0.3] [--report out/]`. It writes `out/report.md` and `out/metrics.json`, caches Jev answers in `out/jev-cache.json`, and prints the summary table.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2951,7 +3064,40 @@ export function renderReport(runs: TauRun[]): string {
 }
 ```
 
-- [ ] **Step 4: Implement the CLI**
+- [ ] **Step 4: Implement the arg parser and the CLI**
+
+`packages/replay/src/args.ts`:
+
+```ts
+export interface CliArgs {
+  targets: string[];
+  tau: number[];
+  report: string;
+}
+
+/** Parse positional session targets plus the --tau and --report flags,
+ * consuming each flag's value as a pair so a value like "out/" is never
+ * mistaken for a session path. */
+export function parseArgs(argv: string[]): CliArgs {
+  const targets: string[] = [];
+  let tau = [0.3];
+  let report = "out";
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--tau") {
+      tau = (argv[++i] ?? "0.3").split(",").map(Number);
+      continue;
+    }
+    if (arg === "--report") {
+      report = argv[++i] ?? "out";
+      continue;
+    }
+    if (arg.startsWith("--")) throw new Error(`unknown flag: ${arg}`);
+    targets.push(arg);
+  }
+  return { targets, tau, report };
+}
+```
 
 `packages/replay/src/cli.ts`:
 
@@ -2961,23 +3107,22 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "n
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "@token-saver/core";
 import type { JevClient, JevRequest } from "@token-saver/core";
+import { parseArgs } from "./args.js";
 import { cachingClient } from "./jevCache.js";
 import { replaySession } from "./run.js";
-import { renderReport, summarize } from "./report.js";
+import { DEFAULT_PRICES, renderReport, summarize } from "./report.js";
 import type { TauRun } from "./report.js";
-
-// Anthropic-shaped defaults; override with --prices input,cacheRead,cacheWrite (per Mtok).
-const DEFAULT_PRICES = { input: 3 / 1e6, cacheRead: 0.3 / 1e6, cacheWrite: 3.75 / 1e6 };
 
 function httpClient(): JevClient {
   const key = process.env.TYPESAFE_API_KEY;
   return {
-    async systemOne(request: JevRequest) {
+    async systemOne(request: JevRequest, signal?: AbortSignal) {
       if (key === undefined) throw new Error("TYPESAFE_API_KEY is not set");
       const response = await fetch("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
         body: JSON.stringify(request),
+        signal,
       });
       if (!response.ok) throw new Error(`typesafe ${response.status}`);
       return (await response.json()) as { answers: Record<string, { noul: number }> };
@@ -2992,14 +3137,7 @@ function sessionFiles(target: string): string[] {
     .map((name) => join(target, name));
 }
 
-function flag(name: string, fallback: string): string {
-  const index = process.argv.indexOf(`--${name}`);
-  return index === -1 ? fallback : process.argv[index + 1] ?? fallback;
-}
-
-const targets = process.argv.slice(2).filter((arg) => !arg.startsWith("--") && !arg.match(/^[\d.,/]+$/));
-const outDir = flag("report", "out");
-const taus = flag("tau", "0.3").split(",").map(Number);
+const { targets, tau: taus, report: outDir } = parseArgs(process.argv.slice(2));
 
 mkdirSync(outDir, { recursive: true });
 const client = cachingClient(httpClient(), join(outDir, "jev-cache.json"));
@@ -3059,6 +3197,15 @@ git commit -m "feat(replay): CLI and markdown report with tau curve"
 - Consumes: the replay CLI.
 - Produces: a recorded baseline and, if warranted, revised defaults. No new code interfaces.
 
+**Execution note (controller ruling):** `TYPESAFE_API_KEY` is not set in this
+environment and Jev cannot be reached, so Step 1 cannot run here. Do Steps 2–5
+as follows instead: write the note file with a "Not yet run" section holding the
+exact command below, the session directory, and the tau values to try; leave
+`DEFAULT_CONFIG.keepThreshold` at 0.3 and do not touch `config.ts`; run
+`npx vitest run` and commit. Do not fabricate a table. If the key IS present in
+your environment (`echo "${TYPESAFE_API_KEY:+set}"` prints `set`), run Step 1 for
+real and do the task as written.
+
 - [ ] **Step 1: Run replay over the real session history**
 
 Run:
@@ -3095,7 +3242,7 @@ git commit -m "docs: replay baseline over recorded sessions, tune keepThreshold"
 ### Task 16: The pi extension skeleton: config, state, and applying decisions
 
 **Files:**
-- Create: `packages/pi/package.json`, `packages/pi/tsconfig.json`, `packages/pi/build.mjs`, `packages/pi/src/state.ts`, `packages/pi/src/jev.ts`, `packages/pi/src/index.ts`
+- Create: `packages/pi/package.json`, `packages/pi/tsconfig.json`, `packages/pi/build.mjs`, `packages/pi/src/state.ts`, `packages/pi/src/jev.ts`
 - Test: `packages/pi/test/state.test.ts`
 
 **Interfaces:**
@@ -3391,6 +3538,8 @@ function conversation(): PiMessage[] {
     { role: "assistant", content: [{ type: "text", text: "ok" }] },
     { role: "user", content: "and now this" },
     { role: "assistant", content: [{ type: "text", text: "sure" }] },
+    { role: "user", content: "keep going" },
+    { role: "assistant", content: [{ type: "text", text: "will do" }] },
   ];
 }
 
@@ -3424,9 +3573,9 @@ describe("collectResults", () => {
     expect(collected.results).toHaveLength(1);
     expect(collected.results[0]!.toolName).toBe("read");
     expect(collected.results[0]!.input).toEqual({ path: "src/app.ts" });
-    expect(collected.currentTurn).toBe(3);
-    expect(collected.results[0]!.turnsAgo).toBe(2);
-    expect(collected.task.recent_user_messages).toEqual(["now the other file", "and now this"]);
+    expect(collected.currentTurn).toBe(4);
+    expect(collected.results[0]!.turnsAgo).toBe(3);
+    expect(collected.task.recent_user_messages).toEqual(["and now this", "keep going"]);
   });
 });
 
@@ -3455,7 +3604,8 @@ describe("handleContext", () => {
     const first = await handleContext(input({ store }));
     store.add(first.sweep!.decisions);
     const second = await handleContext(input({ store, client: { systemOne: async () => { throw new Error("should not be called"); } } }));
-    expect(second.sweep).toBeNull();
+    expect(second.sweep!.reason).toBe("no-candidates");
+    expect(second.trigger).toBeNull();
     expect(JSON.stringify(second.messages)).toContain("[token-saver]");
   });
 
@@ -3504,11 +3654,11 @@ describe("handleContext", () => {
     };
     const first = await handleContext(input({ client: keepAll }));
     expect(first.sweep!.reason).toBe("post-gate");
-    expect(first.cooldownUntilTurn).toBe(6);
+    expect(first.cooldownUntilTurn).toBe(7);
 
     const second = await handleContext(input({
       client: { systemOne: async () => { throw new Error("should not be called"); } },
-      cooldownUntilTurn: 6,
+      cooldownUntilTurn: 7,
     }));
     expect(second.sweep).toBeNull();
   });
@@ -3600,6 +3750,7 @@ export function collectResults(messages: PiMessage[]): {
   currentTurn: number;
 } {
   const results: ResultRef[] = [];
+  const resultTurns: number[] = [];
   const touches: FileTouch[] = [];
   const userMessages: string[] = [];
   const calls = new Map<string, { name: string; args: Record<string, unknown>; turn: number }>();
@@ -3637,13 +3788,16 @@ export function collectResults(messages: PiMessage[]): {
       text,
       tokens: estimateTokens(text),
       messageIndex,
-      turnsAgo: currentTurn - (call?.turn ?? currentTurn),
+      turnsAgo: 0, // filled in below, against the final turn count
       isError: message.isError === true,
     });
+    resultTurns.push(call?.turn ?? currentTurn);
   });
 
   return {
-    results,
+    // turnsAgo is measured from the latest turn, not from the turn the result
+    // arrived in — mid-walk it would always be zero.
+    results: results.map((result, i) => ({ ...result, turnsAgo: currentTurn - resultTurns[i]! })),
     touches,
     currentTurn,
     task: {
@@ -3907,6 +4061,19 @@ git commit -m "feat(pi): recall tool reading originals from the session"
 **Interfaces:**
 - Consumes: everything from Tasks 16–18.
 - Produces: the loadable extension. No new exported functions beyond `renderSweepEntry(data: SweepEntryData): string` in `ui.ts`.
+
+**Execution note (controller ruling):** Steps 1 and 6 need an interactive pi
+session and a live `TYPESAFE_API_KEY`, neither of which is available here. Do not
+block on them. Instead: handle both price shapes in `priceOf` (per-token values
+are `< 0.001`, per-Mtok values are `>= 0.001` — divide the latter by 1e6), record
+that in a comment where the code reads `ctx.model.cost`, and leave the probe from
+Step 1 out of the committed extension. For Step 6, build the extension, confirm
+it loads far enough to fail only on the missing key, and write the manual
+checklist into the report for the user to run. Also check pi's own extension
+docs (`node_modules/@earendil-works/pi-coding-agent`, or the published docs for
+0.85.1) for the exact `registerTool` parameter-schema format before writing
+Step 5's code — if it wants TypeBox rather than a plain JSON schema, follow the
+docs and note the change in your report.
 
 - [ ] **Step 1: Confirm the price units before trusting the cost gate**
 
