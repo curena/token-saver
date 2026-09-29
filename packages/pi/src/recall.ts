@@ -1,5 +1,5 @@
-import { firstLineOf } from "@token-saver/core";
-import type { ResultRef } from "@token-saver/core";
+import { firstLineOf } from "@token-saver/prune";
+import type { ResultRef } from "@token-saver/prune";
 
 export interface RecallSource {
   findResultText(toolCallId: string): string | null;

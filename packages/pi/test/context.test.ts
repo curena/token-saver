@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG, emergencyLevel } from "@token-saver/core";
-import type { JevClient } from "@token-saver/core";
+import { DEFAULT_CONFIG, emergencyLevel } from "@token-saver/prune";
+import type { JevClient } from "@token-saver/prune";
 import { collectResults, handleContext } from "../src/context.js";
 import type { HandleInput, PiMessage } from "../src/context.js";
 import { DecisionStore } from "../src/state.js";

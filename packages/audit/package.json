@@ -1,0 +1,13 @@
+{
+  "name": "@token-saver/audit",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@token-saver/core": "*",
+    "@typesafe-ai/sdk": "^0.6.0"
+  }
+}

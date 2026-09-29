@@ -6,8 +6,8 @@ Two halves, built from opposite ends of the same design:
 
 | | What it does | Runs | Harness |
 |---|---|---|---|
-| **Setup audit** (`src/`) | Hides skills that do not fit the project, so they stop being injected | Between sessions, you invoke it | Claude Code |
-| **Stale-result pruning** (`packages/`) | Elides large, old tool results the agent has finished with | Mid-session, before each model call | pi |
+| **Setup audit** (`packages/audit` + `packages/claude-code`) | Hides skills that do not fit the project, so they stop being injected | Between sessions, you invoke it | Claude Code |
+| **Stale-result pruning** (`packages/prune` + `packages/pi`) | Elides large, old tool results the agent has finished with | Mid-session, before each model call | pi |
 
 Both need a TypeSafe API key, and both fail open without one: no key means no
 judgment, and no judgment means no change.
@@ -21,17 +21,18 @@ dependency). A variable already set in your shell wins over the file — so
 `TYPESAFE_API_KEY= token-saver audit` still exercises the no-key path even with a key
 on disk. `.env` is gitignored and on the redaction denylist below.
 
-> The two halves still have two project shapes — a flat `src/` and an npm workspace
-> under `packages/` — because they were merged before being restructured. See
-> [the reconciliation note](docs/superpowers/specs/2026-09-27-two-product-reconciliation.md)
-> for the shared surface they will collapse onto.
+Both sit in one npm workspace. `packages/core` holds the surface they share — the
+token estimator, the redaction pass, and the Jev client wrapper — and imports neither
+harness.
 
 ---
 
 ## The setup audit (Claude Code)
 
 ```bash
-npm install && npm run build && npm link
+npm install
+npm run build -w @token-saver/claude-code
+npm link packages/claude-code
 ```
 
 ```bash
@@ -50,7 +51,7 @@ request, and proposes `skillOverrides`. Two guarantees about what it will not do
 `--apply` is yours to run: Claude Code blocks an agent from writing
 `.claude/settings.local.json`, so an agent cannot apply the audit on your behalf.
 
-Add the `SessionStart` hook from `src/adapters/claude-code/hooks.json` to your settings
+Add the `SessionStart` hook from `packages/claude-code/src/hooks.json` to your settings
 to be reminded when your skills or project drift enough to warrant a fresh audit. The
 hook only reminds — it changes nothing by itself.
 
@@ -121,29 +122,59 @@ Extra flags:
 
 ## Redaction
 
-Before any project data (README, manifests, file tree, recent prompts) is sent to Jev,
-it is run through a redaction pass. A path matching the denylist is never read for this
-purpose at all:
+Everything either product sends to Jev goes through one pass in `packages/core` first —
+the audit's project data (README, manifests, file tree, recent prompts) and the pruner's
+tool-result text (file contents, command output) alike. Both reach Jev through the same
+wrapper, so redaction happens by construction rather than by each side remembering to do
+it.
 
-- `.env*`
+Two layers:
+
+**A path on the denylist is skipped entirely** — not redacted, not sent:
+
+- `.env*` (including `.envrc`)
 - `*.pem`
 - `id_*`
 - `secrets/**`
 
-Everything else is scanned for high-entropy strings (API keys, tokens) and redacted in
-place before it leaves your machine.
+The audit never opens such a file. The pruner never opens anything, so it does the
+equivalent: a tool result whose input names a denylisted path is left alone — unjudged,
+unsent, and unpruned. You lose the saving on that one result and the content never leaves
+the machine.
 
-**This covers the audit, not yet the pruner.** The pruner sends the text of tool
-results — file contents, command output — which is the half the requirement was written
-for. Closing that gap is tracked in
-[the reconciliation note](docs/superpowers/specs/2026-09-27-two-product-reconciliation.md), §5.
+**Everything else is scanned** for high-entropy strings — provider key prefixes, JWTs,
+`SOMETHING_TOKEN=…` assignments, and unrecognised random-looking runs — and each match is
+replaced with `[REDACTED]` before the request goes out.
+
+The masked copy exists only for the duration of the Jev call. Every line you or the agent
+sees — a rendered stub, a `recall`ed range, the audit's table — comes from the original
+text, so redaction never changes what the agent is working with. That also means the
+scanner is tuned for recall over precision: an over-eager mask costs Jev a little context
+and nothing else.
+
+Known limits, stated rather than implied: the denylist matches paths, so a secret typed
+straight into a command (`export API_KEY=…`) is caught by the content scan or not at all,
+and the scan is a heuristic. Precision gets measured against the eval harness in
+Milestone 2.
 
 ## Development
 
 ```bash
-npm test        # both suites: tests/ and packages/*/test/
-npm run typecheck
+npm test            # every package's suite
+npm run typecheck   # tsc -b across all six projects
+npm run build       # the Claude Code CLI and the pi extension
 ```
+
+Six packages, split on product-vs-adapter rather than on harness:
+
+| Package | Holds |
+|---|---|
+| `core` | `tokens` · `redact` · the Jev wrapper — no harness, no product |
+| `audit` | setup-audit domain: fit policy, profile, proposals, apply/undo |
+| `prune` | pruning domain: chunking, sweeping, staleness, budget |
+| `claude-code` | adapter: skill inventory, transcript usage, paths, the CLI |
+| `pi` | adapter: pi extension, context hooks, `recall` |
+| `replay` | eval harness over recorded sessions |
 
 Design docs:
 

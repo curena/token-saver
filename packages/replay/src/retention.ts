@@ -1,4 +1,4 @@
-import type { Chunk } from "@token-saver/core";
+import type { Chunk } from "@token-saver/prune";
 
 export interface LaterUse {
   text: string;

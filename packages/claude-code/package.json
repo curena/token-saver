@@ -1,0 +1,13 @@
+{
+  "name": "@token-saver/claude-code",
+  "version": "0.0.0",
+  "type": "module",
+  "bin": { "token-saver": "./dist/token-saver.js" },
+  "scripts": { "build": "node build.mjs" },
+  "dependencies": {
+    "@token-saver/audit": "*",
+    "@token-saver/core": "*",
+    "@typesafe-ai/sdk": "^0.6.0"
+  },
+  "devDependencies": { "esbuild": "^0.24.0" }
+}

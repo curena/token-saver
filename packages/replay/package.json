@@ -3,5 +3,5 @@
   "version": "0.0.0",
   "type": "module",
   "bin": { "token-saver-replay": "./src/cli.ts" },
-  "dependencies": { "@token-saver/core": "*" }
+  "dependencies": { "@token-saver/prune": "*" }
 }

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { Decision } from "@token-saver/core";
+import type { Decision } from "@token-saver/prune";
 import { RESTORE_ENTRY, SWEEP_ENTRY } from "../src/state.js";
 
 function decision(id: string): Decision {
