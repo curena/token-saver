@@ -1,13 +1,17 @@
 {
   "name": "token-saver",
   "private": true,
+  "version": "0.1.0",
   "type": "module",
+  "engines": { "node": ">=20" },
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
+    "build": "npm run build -w @token-saver/claude-code && npm run build -w @token-saver/pi",
     "test": "vitest run",
-    "typecheck": "tsc -b packages/core packages/replay packages/pi"
+    "typecheck": "tsc -b packages/core packages/audit packages/claude-code packages/prune packages/replay packages/pi",
+    "dev": "tsx packages/claude-code/src/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

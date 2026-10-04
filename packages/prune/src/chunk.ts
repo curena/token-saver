@@ -1,5 +1,5 @@
 import type { Chunk } from "./types.js";
-import { estimateTokens } from "./tokens.js";
+import { estimateTokens } from "@token-saver/core";
 
 /**
  * `isBoundary(line, previous)` answers "does a new chunk start AT `line`?".

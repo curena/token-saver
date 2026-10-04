@@ -1,5 +1,5 @@
-import { estimateTokens } from "@token-saver/core";
-import type { FileTouch, ResultRef } from "@token-saver/core";
+import { estimateTokens } from "@token-saver/prune";
+import type { FileTouch, ResultRef } from "@token-saver/prune";
 
 interface Entry {
   type: string;

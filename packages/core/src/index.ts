@@ -1,12 +1,6 @@
-export * from "./types.js";
-export * from "./tokens.js";
-export * from "./chunk.js";
-export * from "./render.js";
-export * from "./config.js";
-export * from "./judge.js";
-export * from "./sweep.js";
-export * from "./policy/eligibility.js";
-export * from "./policy/staleness.js";
-export * from "./policy/decide.js";
-export * from "./policy/cost.js";
-export * from "./policy/budget.js";
+// The shared surface: what both products need and neither owns.
+// Nothing here may import a harness or a product package.
+export { estimateTokens, calibrateCharsPerToken } from "./tokens.js";
+export { redact, isDenylistedPath } from "./redact.js";
+export { Jev } from "./jev.js";
+export type { AskOptions, JevClient, JevOptions } from "./jev.js";

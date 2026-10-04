@@ -1,4 +1,4 @@
-import type { Decision, SweepEntryData } from "@token-saver/core";
+import type { Decision, SweepEntryData } from "@token-saver/prune";
 
 export const SWEEP_ENTRY = "token-saver/sweep";
 export const RESTORE_ENTRY = "token-saver/restore";

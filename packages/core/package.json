@@ -5,8 +5,5 @@
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
-  },
-  "dependencies": {
-    "@typesafe-ai/sdk": "^0.6.0"
   }
 }

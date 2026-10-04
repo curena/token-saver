@@ -93,3 +93,76 @@ describe("judgeResult", () => {
     }
   });
 });
+
+/**
+ * The requirement this covers: redact locally, then send. The pruner's state is tool-result
+ * text -- file contents, command output -- so it is the half of the product the requirement
+ * was written for. It gets redaction by routing through core's `Jev`, not by its own pass.
+ */
+describe("judgeResult redaction", () => {
+  const SECRET_KEY = "sk-livekey1234567890abcdefgh";
+  const SECRET_ASSIGNMENT = "OPENAI_API_KEY=hunter2hunter2";
+
+  function capturing(): { requests: any[]; client: JevClient } {
+    const requests: any[] = [];
+    return {
+      requests,
+      client: {
+        systemOne: async (request: any) => {
+          requests.push(request);
+          return { answers: { "chunk::0": { noul: 0.1 }, "chunk::1": { noul: 0.1 } } };
+        },
+      },
+    };
+  }
+
+  const leaky: Chunk[] = [
+    { index: 0, startLine: 1, endLine: 2, text: `const key = "${SECRET_KEY}";`, tokens: 500 },
+    { index: 1, startLine: 3, endLine: 4, text: SECRET_ASSIGNMENT, tokens: 500 },
+  ];
+
+  it("masks a secret in chunk text before the client sees it", async () => {
+    const { requests, client } = capturing();
+    const request = buildRequest(result, leaky, task, "", DEFAULT_CONFIG);
+    await judgeResult(client, request, 2, DEFAULT_CONFIG);
+    const sent = JSON.stringify(requests[0]);
+    expect(sent).not.toContain(SECRET_KEY);
+    expect(sent).not.toContain("hunter2hunter2");
+    expect(sent).toContain("[REDACTED]");
+  });
+
+  it("masks a secret in the surrounding task state too", async () => {
+    const { requests, client } = capturing();
+    const leakyTask: TaskState = { ...task, latest_assistant_text: `exported ${SECRET_KEY}` };
+    await judgeResult(client, buildRequest(result, chunks, leakyTask, "", DEFAULT_CONFIG), 2, DEFAULT_CONFIG);
+    expect(JSON.stringify(requests[0])).not.toContain(SECRET_KEY);
+  });
+
+  it("leaves the caller's request untouched, so recall restores the original lines", async () => {
+    const { client } = capturing();
+    const request = buildRequest(result, leaky, task, "", DEFAULT_CONFIG);
+    await judgeResult(client, request, 2, DEFAULT_CONFIG);
+    // The masked copy exists only for the duration of the call. Everything the agent is
+    // ever shown -- a rendered stub, a recalled range -- comes from this side.
+    expect(JSON.stringify(request.state)).toContain(SECRET_KEY);
+    expect(leaky[0]!.text).toContain(SECRET_KEY);
+  });
+
+  it("sends the questions verbatim, because they carry nothing to redact", async () => {
+    // `Jev.ask` redacts `state` and deliberately not `questions`. That is safe here only
+    // because `instructionsFor` interpolates a chunk index and nothing else; this asserts
+    // the questions survive the trip unchanged, so a future builder that starts
+    // interpolating session text fails here rather than leaking quietly.
+    const { requests, client } = capturing();
+    const request = buildRequest(result, leaky, task, "", DEFAULT_CONFIG);
+    await judgeResult(client, request, 2, DEFAULT_CONFIG);
+    expect(requests[0].questions).toEqual(request.questions);
+    expect(JSON.stringify(request.questions)).not.toContain("[REDACTED]");
+  });
+
+  it("pins the model on the request that actually goes out", async () => {
+    const { requests, client } = capturing();
+    await judgeResult(client, buildRequest(result, chunks, task, "", DEFAULT_CONFIG), 2, DEFAULT_CONFIG);
+    expect(requests[0].model).toBe("jev-1.13.0");
+  });
+});

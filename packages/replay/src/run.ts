@@ -1,7 +1,7 @@
 import {
   applyDecisions, chunkResult, emergencyLevel, firstLineOf, nextArmAt, runSweep, turnLevel,
-} from "@token-saver/core";
-import type { Config, Decision, JevClient } from "@token-saver/core";
+} from "@token-saver/prune";
+import type { Config, Decision, JevClient } from "@token-saver/prune";
 import { afterResultSummary, parseSession } from "./session.js";
 import type { CallSite } from "./session.js";
 import { collectLaterUses, detectMisses } from "./retention.js";

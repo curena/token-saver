@@ -1,5 +1,5 @@
 import { chunkResult } from "./chunk.js";
-import { estimateTokens } from "./tokens.js";
+import { estimateTokens } from "@token-saver/core";
 import { buildRequest, judgeResult } from "./judge.js";
 import type { JevClient, TaskState } from "./judge.js";
 import { decideLevel } from "./policy/decide.js";
@@ -111,6 +111,11 @@ export async function runSweep(input: SweepInput): Promise<SweepOutcome> {
     const request = buildRequest(result, chunks, input.task, input.afterResultFor(result), config);
     const probabilities = await judgeResult(input.client, request, chunks.length, config, input.signal);
     jevRequests++;
+    // Measured on the request as built, which is an upper bound on what was sent: the
+    // wrapper redacts `state` first, and every mask is shorter than the secret it replaces.
+    // An upper bound is the right error for a cost figure to have, and the alternative --
+    // threading the redacted request back out of `judgeResult` -- would put a copy of the
+    // masked chunk text in this function purely to count its characters.
     jevInputTokens += estimateTokens(JSON.stringify(request));
     if (probabilities === null) {
       return finish(decisions, "judge-failed", jevRequests, jevInputTokens, probabilitiesById);
