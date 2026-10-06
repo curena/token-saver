@@ -9,3 +9,9 @@ out/
 # Worktrees live inside the repo; without this they get committed as stray
 # gitlinks (token-saver-g carried one for .claude/worktrees/milestone-1-plan).
 .claude/worktrees/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
